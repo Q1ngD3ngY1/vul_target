@@ -1,0 +1,34 @@
+新增doc_diff_operation异步任务的配置
+application.yaml -> tasks
+
+  doc_diff_data:
+    runners: 1 #处理协程数，无法动态调整
+    retry_wait_time: 1m #重试等待时间
+    max_retry: 1 #最大重试次数
+    timeout: 30m #超时时间
+    fail_timeout: 3s # 失败回调超时
+    delay: 0s #启动延迟
+    batch:  1
+    batch_size: 0
+    stopped_resume_time: 720h
+    
+  doc_diff_operation_task:
+    runners: 1 #处理协程数，无法动态调整
+    retry_wait_time: 1m #重试等待时间
+    max_retry: 1 #最大重试次数，重试需要完整的断点，doc_diff有部分操作不适合重启
+    timeout: 120m #超时时间
+    fail_timeout: 3s # 失败回调超时
+    delay: 0s #启动延迟
+    batch:  1
+    batch_size: 0
+    stopped_resume_time: 720h
+
+【API变更】
+ListQaTask接口 ListQaTaskItem结构体 新增 SourceType 和 SourceId
+新增接口：
+ListDocDiffTask 获取文档diff列表
+CreateDocDiffTask 创建文档diff任务
+DescribeDocDiffTask 获取文档对比任务结果
+DeleteDocDiffTask 删除文档对比任务
+HandleDocDiffTask 处理文档对比任务
+ListDocDiffData 获取文档diff结果

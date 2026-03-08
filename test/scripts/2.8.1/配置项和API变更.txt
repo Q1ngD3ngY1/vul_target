@@ -1,0 +1,57 @@
+0. 在es中建立索引
+PUT /attribute  -- 使用attribute.json
+PUT /attribute_label  -- 使用attribute_label
+如果有大客户的数据，需要创建索引
+PUT /isearch_attribute  -- 使用attribute.json
+PUT /isearch_attribute_label  -- 使用attribute_label
+
+1. 新增doc_diff_operation异步任务的配置
+application.yaml -> tasks
+
+  sync_attribute_task:
+    runners: 1 #处理协程数，无法动态调整
+    retry_wait_time: 1m #重试等待时间
+    max_retry: 1 #最大重试次数
+    timeout: 12h #超时时间
+    fail_timeout: 3s # 失败回调超时
+    delay: 0s #启动延迟
+    batch: 1
+    batch_size: 0
+    stopped_resume_time: 720h
+2. 在main.yaml中的 handle_tasks 中增加
+  - "sync_attribute_task"
+
+3. application.yaml 中新增配置es连接参数、es的索引
+
+# ES配置( 不使用 trpc-go/goes 的插件)
+elastic_search_config:
+  name: trpc.elasticsearch.lke.knowledge
+  #es地址
+  url: http://xxx:9200
+  #用户名
+  user: elastic
+  #密码
+  password: xxx
+  #超时时间
+  timeout: 8000
+  log:
+    #是否开启日志
+    enabled: true
+    #是否开启请求日志
+    request_enabled: true
+    #是否开启请求body日志
+    request_body: true
+
+# es索引配置
+es_index_name_config:
+  attribute: attribute
+  attribute_label: attribute_label
+
+4. application.yaml 中新增是否开启es检索标签，需在数据刷新完毕之后开启
+es_search:
+  attribute_enable_es: false
+  wildcard_time_timeout_ms: 1000
+
+5. 将存量的标签数据刷到es之中，其中robot_ids为空表示刷所有的数据到es
+INSERT INTO t_knowledge_task (user_id, task_type, task_mutex, params, retry_times , max_retry_times, timeout, runner, runner_instance, result , trace_id, start_time, end_time, next_start_time)
+VALUES (0, 26, 0, '{"name":"sync_attribute_task","robot_ids":[],"delay_ms":2, "add_label_chunk_size":10}', 0 , 1, 43200, '', 0, '' , REPLACE(UUID(), '-', ''), now(), now(), now())

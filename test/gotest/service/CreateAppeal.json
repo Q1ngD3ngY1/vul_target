@@ -1,0 +1,39 @@
+[
+  {
+    "CaseName": "CreateAppeal",
+    "AuthorInfo": "",
+    "CaseDesc": "CreateAppeal",
+    "CaseGenMode": "easy-json",
+    "TestSuite": "suitName3",
+    "ProtoFile": "",
+    "ServiceName": "trpc.KEP.bot_knowledge_config_server.Admin",
+    "MethodName": "CreateAppeal",
+    "Func": "/trpc.KEP.bot_knowledge_config_server.Admin/CreateAppeal",
+    "ReqBody": "trpc.KEP.bot_knowledge_config_server.CreateAppealReq",
+    "RspBody": "trpc.KEP.bot_knowledge_config_server.CreateAppealRsp",
+    "Protocol": "trpc",
+    "Setup": "",
+    "Teardown": "",
+    "RequestJson": {
+      "bot_biz_id": "1803790207677104128",
+      "appeal_type": 10,
+      "qa_biz_id": "1848566978237654784",
+      "Reason": "内部测试人工申诉123123"
+    },
+    "CheckList": [
+      {
+        "JsonPath": "list",
+        "OP": "EQ",
+        "TARGET": []
+      }
+    ],
+    "Variables": null,
+    "CaseContext": null,
+    "RequestTransInfoJson": [
+      {
+        "TransInfoKey": "request_id",
+        "TransInfoValue": "4x44"
+      }
+    ]
+  }
+]

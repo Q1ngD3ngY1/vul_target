@@ -1,0 +1,19 @@
+----------七彩石----------
+1. application.yml
+   resume_max_count_limit: 1500
+
+kb-config_zh-CN.json字段变更:
+  "KeyUnsatisfiedOperator" : "操作人",
+  "KeyUnsatisfiedStatus"  : "处理状态，0：待处理，1：已拒答，2：已忽略，3：已纠错",
+  "KeyUnsatisfiedCreateTime": "创建时间",
+  "KeyUnsatisfiedUpdateTime": "更新时间"
+
+kb-config_en-US.json字段变更：
+  "KeyUnsatisfiedOperator": "Operator",
+  "KeyUnsatisfiedStatus": "Processing status: 0 = Pending, 1 = Declined, 2 = Ignored, 3 = Corrected",
+  "KeyUnsatisfiedCreateTime": "Creation time",
+  "KeyUnsatisfiedUpdateTime": "Update time"
+
+新增db_source.default_select_limit: 100 # 默认查询limit
+----------API----------
+ListDbSource和ListDbTable增加Filters字段

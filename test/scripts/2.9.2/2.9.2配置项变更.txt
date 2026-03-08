@@ -1,0 +1,6 @@
+1. application.yaml 中新增配置项，在数据迁移完成后配置
+# 数据迁移配置
+data_migration_config:
+  # 新迁移到TDSQL的数据表
+  migrate_tdsql_tables:
+  - t_image_vector

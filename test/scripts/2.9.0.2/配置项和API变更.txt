@@ -1,0 +1,136 @@
+1. 新增外部数据库配置信息
+application.yaml -> db_source
+db_source:
+  # 盐值
+  salt:
+  # 外部数据库写入 es 的行数
+  es_input_size: 100
+  # 数据库下单次添加 table 的限制
+  max_table_num_once: 10
+  # 数据库下添加 table 的限制
+  max_table_num: 100
+  # 允许添加数据表的最大列数
+  max_table_col: 180
+  # 允许添加数据表的最大行数
+  max_table_row: 10000000
+
+2. 新增数据库发布任务的异步任务
+application.yaml -> tasks
+  release_db_task:
+    runners: 1 #处理协程数，无法动态调整
+    retry_wait_time: 1m #重试等待时间
+    max_retry: 2 #最大重试次数
+    timeout: 10m #超时时间
+    fail_timeout: 3s # 失败回调超时
+    delay: 0s #启动延迟
+    batch: 1
+    batch_size: 0
+    stopped_resume_time: 720h
+在main.yaml中的 handle_tasks 中增加
+  - "release_db_task"
+
+3. 新增配置文件
+string 类型，用于配置加密的密钥，以 base64 编码存储私钥， 加密方式：RSA-OAEP SHA-256 长度 2048
+db_source_decode_key
+
+4.knowledge_delete_config.need_delete_tables增加t_app_share_knowledge清理项
+  t_app_share_knowledge: "CORP_APP_BIZ_ID"
+  t_db_source: "CORP_APP_BIZ_ID"
+  t_release_db_source: "CORP_APP_BIZ_ID"
+  t_db_source_prod: "CORP_APP_BIZ_ID"
+  t_db_table: "CORP_APP_BIZ_ID"
+  t_release_db_table: "CORP_APP_BIZ_ID"
+  t_db_table_prod: "CORP_APP_BIZ_ID"
+  t_db_table_column: "CORP_APP_BIZ_ID"
+
+5 增加qa_extract_model默认项
+share_knowledge_config:
+  default_qa_extract_model: cs-normal-70b
+
+6.client.yaml 添加 text2sql 数据库依赖配置。
+  service:
+    - name: mysql.db_text2sql
+
+7.知识库权限需求 增加两个异步任务和相关配置
+application.yaml
+tasks:
+  batch_update_vector_task:
+    runners: 1 
+    retry_wait_time: 30s
+    max_retry: 3
+    timeout: 1h
+    fail_timeout: 3s
+    delay: 0s
+    batch: 3
+    batch_size: 0
+    stopped_resume_time: 720h
+  full_update_label_task:
+    runners: 1 
+    retry_wait_time: 10s
+    max_retry: 1
+    timeout: 1000h
+    fail_timeout: 3s
+    delay: 0s
+    batch: 3
+    batch_size: 0
+    stopped_resume_time: 720h
+
+main.yaml:
+handle_tasks:
+  -"batch_update_vector_task"
+  -"full_update_label_task"
+permissions:
+  user_max_limit: 1000
+  role_max_limit: 1000
+  user_name_min_limit: 1
+  user_name_max_limit: 100
+  third_user_id_max_limit: 200
+  third_user_id_reg: ^[a-zA-Z0-9_-]+$
+  cate_retrieval_key: lke_category_key
+  role_retrieval_key: lke_role_key
+  role_name_min_limit: 1
+  role_name_max_limit: 100
+  update_doc_vector_size: 300
+  update_doc_vector_limit: 10
+  update_qa_vector_size: 300
+  update_qa_vector_limit: 30
+  update_db_vector_size: 300
+  update_db_vector_limit: 30
+  update_vector_sleep_switch: true
+  update_vector_sleep_millisecond: 50
+  chunk_number: 1000
+
+分类标签刷数据sql app_ids表示需要刷的robot_id(自增ID)，为空表示刷新所有的应用。
+INSERT INTO t_knowledge_task (user_id, task_type, task_mutex, params, retry_times, max_retry_times, timeout, runner, runner_instance, result, trace_id, start_time, end_time, next_start_time) 
+  VALUES (0,31,0,'{\"name\":\"full_update_label_task\",\"app_ids\":[],\"max_id\":350741}',0,1,3600000,'',0,'',REPLACE(UUID(), '-', ''),now(),now(), now());
+
+----------接口和权限位变更----------
+1. 权限位  lkeRepository.release.do  中增加
+  "^ListReleaseDb$",
+  "^ListReleaseDbTable$"
+
+2. 权限信息表中增加一行权限ID lkeRepository.manage.db
+  "^TestDbSourceConnection$",
+  "^ListSourceTableNames$",
+  "^AddDbSource$",
+  "^DeleteDbSource$",
+  "^UpdateDbSource$",
+  "^ListDbSource$",
+  "^GetDbSource$",
+  "^DeleteDbTable$",
+  "^GetDbTable$",
+  "^ListDbTable$",
+  "^ListDbTableColumn$",
+  "^UpdateDbTableAndColumns$",
+  "^PreviewTable$",
+  "^GetDbSourcePublicKey$",
+  "^UpdateDbTableEnabled$"
+
+3. 权限位  lkeRepository.manage.doc  中增加
+  "^Text2SqlPreviewTable$",
+  "^Text2SqlGetColumns$",
+  "^UpdateText2SqlColumns$"
+
+3. product_type为lke的产品权限表中增加
+  "lkeRepository.manage.db",
+

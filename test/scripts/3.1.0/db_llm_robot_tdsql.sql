@@ -1,0 +1,1 @@
+ALTER TABLE `t_app_share_knowledge` ADD KEY `idx_knowledge_biz_id` (`knowledge_biz_id`);

@@ -1,0 +1,1 @@
+curl -H "Content-Type: application/json" -X POST http://ip:8081/app/FlushKnowledgeQaAppConfig -d@FlushKnowledgeQaAppConfig.json

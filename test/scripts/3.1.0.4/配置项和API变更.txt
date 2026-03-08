@@ -1,0 +1,51 @@
+----------七彩石----------
+client.yaml
+    - callee: trpc.KEP.bot_data_statistics_server.Api
+      namespace: Production
+      target: polaris://trpc.KEP.bot-data-statistics-server.Api
+      protocol: trpc
+      timeout: 20000
+      env_name: formal
+
+main.yaml
+handle_tasks:
+  - "corp_cos_doc_refresh_task"
+
+application.yaml
+tasks:
+  corp_cos_doc_refresh_task:
+    runners: 4 #处理协程数，无法动态调整
+    retry_wait_time: 1m #重试等待时间
+    max_retry: 2 #最大重试次数
+    timeout: 20m #超时时间
+    fail_timeout: 3s # 失败回调超时
+    delay: 0s #启动延迟
+    batch:  3
+    batch_size: 0
+    stopped_resume_time: 720h
+
+cos_document_config:
+  sts_endpoint: sts.tencentcloudapi.com
+  sts_region: ap-guangzhou
+  secret_id: ***
+  secret_key: ***
+  service_role: ADP_QCSLinkedRolelnCOS
+  cos_service_endpoint: https://service.cos.myqcloud.com
+  cors_origin: https://adp.cloud.tencent.com
+  credential_duration: 1h
+
+
+新增错误码：
+  "ErrInvalidDbSourceHost": "数据库地址不合法",
+  "ErrInvalidDbSourceHost": "Invalid database host",
+
+trpc_go.yaml -> config -> rainbow中新增
+        - name: internal-ip # 内网IP网段
+          appid: 07f5f3ff-e7c5-4737-8726-572b5bd7df30
+          group: Public.ipv4 # 配置所属组
+          type: kv   # 七彩石数据格式, kv(默认), table
+          env_name: Default
+          enable_sign: true
+          user_id: c3712e574e564f9eb44530cc9e40df97
+          user_key: 2997e179a674325d894c0cab88b55ac566bd
+          timeout: 2000

@@ -1,0 +1,73 @@
+----------七彩石----------
+
+
+1. 新增数据库发布任务的异步任务
+
+application.yaml -> tasks
+  enable_db_source_task:
+    runners: 3 #处理协程数，无法动态调整
+    retry_wait_time: 1m #重试等待时间
+    max_retry: 2 #最大重试次数
+    timeout: 10m #超时时间
+    fail_timeout: 3s # 失败回调超时
+    delay: 0s #启动延迟
+    batch: 1
+    batch_size: 0
+    stopped_resume_time: 720h
+在main.yaml中的 handle_tasks 中增加
+  - "enable_db_source_task"
+
+2. 新增数据表学习异步任务
+
+application.yaml -> tasks
+  add_db_table_task:
+    runners: 5 #处理协程数，无法动态调整
+    retry_wait_time: 1m #重试等待时间
+    max_retry: 2 #最大重试次数
+    timeout: 10m #超时时间
+    fail_timeout: 3s # 失败回调超时
+    delay: 0s #启动延迟
+    batch: 1
+    batch_size: 0
+    stopped_resume_time: 720h
+在main.yaml中的 handle_tasks 中增加
+  - "add_db_table_task"
+
+3. 新增外部数据库控制参数，新增 max_top_value_row， top_value_num 修改 es_input_size 为 1000， 新增数据库 VDB 控制开关
+db_source:
+  es_input_size: 1000
+  # 获取 top value 的最大行数
+  max_top_value_row: 200000
+  # 获取 top value 的数量
+  top_value_num: 5
+  # 是否启用数据库 VDB 功能
+  enable_vdb: false
+  # 允许添加的最大数据库数量
+  max_db_source_num: 100
+
+----------接口和权限位变更----------
+
+1. UpdateDbTableEnabled 新增字段
+DbSourceBizId string 非必选
+
+
+----------向量数据库刷标签----------
+1. 刷索引异步任务，新增 sync_db_source_vdb_index_task 异步任务的配置
+application.yaml -> tasks
+
+  sync_db_source_vdb_index_task:
+    runners: 1 #处理协程数，无法动态调整
+    retry_wait_time: 1m #重试等待时间
+    max_retry: 1 #最大重试次数
+    timeout: 12h #超时时间
+    fail_timeout: 3s # 失败回调超时
+    delay: 0s #启动延迟
+    batch: 2
+    batch_size: 0
+    stopped_resume_time: 720h
+2. 在main.yaml中的 handle_tasks 中增加
+  - "sync_db_source_vdb_index_task"
+
+3. 将存量数据添加索引，其中robot_ids为空表示刷所有的数据
+INSERT INTO t_knowledge_task (user_id, task_type, task_mutex, params, retry_times , max_retry_times, timeout, runner, runner_instance, result , trace_id, start_time, end_time, next_start_time)
+VALUES (0, 35, 0, '{"name":"sync_db_source_vdb_index_task","robot_ids":[],"delay_ms":2, "add_label_chunk_size":10}', 0 , 1, 43200, '', 0, '' , REPLACE(UUID(), '-', ''), now(), now(), now())

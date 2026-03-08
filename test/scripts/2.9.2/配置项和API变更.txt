@@ -1,0 +1,6 @@
+实时文档增加 md格式，限制20M
+main.yaml
+# 实时文档相关配置
+realtime_config:
+  file_type_size:
+    md: 20971520

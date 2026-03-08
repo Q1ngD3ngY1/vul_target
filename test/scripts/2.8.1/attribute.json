@@ -1,0 +1,50 @@
+{
+  "settings": {
+    "number_of_shards": 5,
+    "number_of_replicas": 2,
+    "index.max_ngram_diff": 50,
+    "analysis": {
+      "analyzer": {
+        "substring_analyzer": {
+          "type": "custom",
+          "tokenizer": "ngram_tokenizer"
+        }
+      },
+      "tokenizer": {
+        "ngram_tokenizer": {
+          "type": "ngram",
+          "min_gram": 1,
+          "max_gram": 50,
+          "token_chars": [
+            "letter",
+            "digit",
+            "punctuation"
+          ]
+        }
+      }
+    }
+  },
+  "mappings": {
+    "properties": {
+      "attr_id": {
+        "type": "long"
+      },
+      "robot_id": {
+        "type": "long"
+      },
+      "attribute": {
+        "type": "text",
+        "analyzer": "substring_analyzer",
+        "fields": {
+          "keyword": {
+            "type": "keyword"
+          }
+        }
+      },
+      "update_time": {
+        "type": "date",
+        "format": "yyyy-MM-dd HH:mm:ss"
+      }
+    }
+  }
+}

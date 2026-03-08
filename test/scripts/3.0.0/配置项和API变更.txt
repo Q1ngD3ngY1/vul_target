@@ -1,0 +1,71 @@
+----------七彩石----------
+1. application.yml db_source 字段变更:
+
+1.1 db_source 删除字段， max_top_value_row， top_value_num。（发布镜像后删除）
+
+1.2 db_source 新增字段, 新增 value_link_config 字段:
+db_source:
+  test_conn_timeout: 4s # 测试连接超时时间（秒）
+  read_conn_timeout: 4s # 读取连接超时时间（秒）
+  value_link_timeout: 300s # 值链接超时时间（秒）
+  es_insert_time_out: 100s # es插入超时时间（秒）
+  max_text2sql_table_num: 10 # 文本转 sql 语句最大表数量
+  generate_sql_timeout: 9s # 生成 sql 的最大时间
+  dsn_config_mysql: charset=utf8mb4&timeout=10s
+  dsn_config_sqlserver: connection+timeout=10&encrypt=disable
+  sync_time_s: 300
+  value_link_config:
+    top_value_num: 5
+    max_traverse_row: 200000
+    max_value_len: 1000
+    trim_threshold: 10000
+    trim_keep_size: 5000
+
+-- philxu start --
+application.yaml
+attribute_label:
+    # 增大标签值数量限制
+    label_limit: 5000
+    # doc_attr_label_limit: 文档关联的标签值数量
+    doc_attr_label_limit: 500
+    # qa_attr_label_limit: 问答关联的标签值数量
+    qa_attr_label_limit: 500
+
+tasks:
+  # [该功能暂未开放]向量模型切换异步任务
+  update_embedding_model_task:
+    runners: 1 #处理协程数，无法动态调整
+    retry_wait_time: 1m #重试等待时间
+    max_retry: 1 #最大重试次数
+    timeout: 2h #超时时间
+    fail_timeout: 3s # 失败回调超时
+    delay: 0s #启动延迟
+    batch: 5
+    batch_size: 0
+    stopped_resume_time: 720h
+
+main.yaml
+handle_tasks:
+  - "doc_diff_data"
+  # [该功能暂未开放]向量模型切换异步任务
+  # - "update_embedding_model_task"
+  - "doc_split_rule_modify_task"
+
+client.yaml
+     # 大模型网关
+     - name: trpc.adp.ai-gateway.api
+       namespace: Production
+       network: tcp
+       timeout: 4500000
+       target: polaris://trpc.adp.ai-gateway.api
+
+whitelist.yaml
+# [该功能暂未开放]向量模型切换异步任务白名单
+update_embedding_model_whitelist:
+
+-- philxu end --
+
+----------七彩石----------
+
+----------capi----------
+1.DbSourceView 结构体，添加 TableNum 字段 	数据库下表格数量

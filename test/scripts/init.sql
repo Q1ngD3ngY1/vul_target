@@ -1,0 +1,45 @@
+-- 异步任务表
+CREATE TABLE `t_knowledge_task` (
+    `id` bigint NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `user_id` bigint NOT NULL COMMENT '使用者ID, 业务按实际情况关联',
+    `task_type` tinyint NOT NULL COMMENT '任务类型',
+    `task_mutex` tinyint NOT NULL COMMENT '任务互斥',
+    `params` longtext NOT NULL COMMENT '参数',
+    `retry_times` int NOT NULL DEFAULT '0' COMMENT '重试次数',
+    `max_retry_times` int NOT NULL DEFAULT '0' COMMENT '最大重试次数',
+    `timeout` int NOT NULL DEFAULT '0' COMMENT '超时时间(s)',
+    `runner` varchar(64) NOT NULL COMMENT '执行器',
+    `runner_instance` bigint NOT NULL COMMENT '执行器实例',
+    `result` text NOT NULL COMMENT '本次结果',
+    `trace_id` varchar(64) NOT NULL COMMENT 'trace_id',
+    `start_time` datetime NOT NULL COMMENT '任务开始执行时间',
+    `end_time` datetime NOT NULL COMMENT '任务完成时间',
+    `next_start_time` datetime NOT NULL COMMENT '下次任务开始执行时间',
+    `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    KEY `user_id_task_mutex` (`user_id`, `task_mutex`),
+    KEY `create_time` (`create_time`)
+) ENGINE = InnoDB AUTO_INCREMENT = 14202 DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '知识问答任务';
+
+CREATE TABLE `t_knowledge_task_history` (
+    `id` bigint NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `user_id` bigint NOT NULL COMMENT '使用者ID, 业务按实际情况关联',
+    `task_type` tinyint NOT NULL COMMENT '任务类型',
+    `task_mutex` tinyint NOT NULL COMMENT '任务互斥',
+    `params` longtext NOT NULL COMMENT '参数',
+    `retry_times` int NOT NULL DEFAULT '0' COMMENT '重试次数',
+    `max_retry_times` int NOT NULL DEFAULT '0' COMMENT '最大重试次数',
+    `timeout` int NOT NULL DEFAULT '0' COMMENT '超时时间(s)',
+    `runner` varchar(64) NOT NULL COMMENT '执行器',
+    `runner_instance` bigint NOT NULL COMMENT '执行器实例',
+    `result` text NOT NULL COMMENT '本次结果',
+    `is_success` tinyint unsigned NOT NULL DEFAULT '0' COMMENT '状态: 0: 失败; 1 成功;',
+    `trace_id` varchar(64) NOT NULL COMMENT 'trace_id',
+    `start_time` datetime NOT NULL COMMENT '任务开始执行时间',
+    `end_time` datetime NOT NULL DEFAULT '1000-01-01 00:00:00' COMMENT '任务完成时间',
+    `next_start_time` datetime NOT NULL COMMENT '下次任务开始执行时间',
+    `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (`id`),
+    KEY `user_id` (`user_id`)
+) ENGINE = InnoDB AUTO_INCREMENT = 14202 DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '知识问答任务历史';
