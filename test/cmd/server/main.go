@@ -1,76 +1,110 @@
-// KEP.bot-knowledge-config-server
-//
-// @(#)main.go  March 27, 2024
-// Copyright(c) 2024, halelv@Tencent. All rights reserved.
-
 package main
 
 import (
-	"math/rand"
-	"time"
+	"context"
+	"fmt"
 
-	"git.code.oa.com/trpc-go/trpc-go"
+	"git.code.oa.com/trpc-go/trpc-database/timer"
+	"git.code.oa.com/trpc-go/trpc-go/admin"
 	"git.code.oa.com/trpc-go/trpc-go/log"
 	"git.code.oa.com/trpc-go/trpc-go/server"
-	_ "git.code.oa.com/trpc-go/trpc-metrics-prometheus"
-	_ "git.woa.com/adp/common/x/trpcx/filters/env_propagator"
-	_ "git.woa.com/adp/common/x/trpcx/filters/i18n"
-	_ "git.woa.com/adp/common/x/trpcx/filters/permission"
-	"git.woa.com/baicaoyuan/moss"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/dao/redis"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg/registry"
-	"git.woa.com/dialogue-platform/go-comm/clues"
-	"git.woa.com/dialogue-platform/go-comm/encode"
-	"git.woa.com/dialogue-platform/go-comm/panicprinter"
-	"git.woa.com/dialogue-platform/go-comm/runtime0"
-	_ "git.woa.com/galileo/trpc-go-galileo"
-	"gopkg.in/yaml.v3"
-
-	// 这一行是为了防止企业版和元器trpc命名空间重合，永远放在import的最后一行
-	_ "git.woa.com/dialogue-platform/yuanqi/yuanqi-naming-polaris"
+	"git.woa.com/adp/common/x/logx"
+	"git.woa.com/adp/common/x/syncx/timerx"
+	"git.woa.com/adp/common/x/trpcx"
+	"git.woa.com/adp/kb/kb-config/internal/config"
+	_ "git.woa.com/adp/kb/kb-config/internal/dao/segment"
+	"git.woa.com/adp/kb/kb-config/internal/service"
+	"git.woa.com/adp/kb/kb-config/internal/service/api"
+	pb "git.woa.com/adp/pb-go/kb/kb_config"
 )
 
-const (
-	// 编译版本号, 流水线会注入相关信息
-	buildVersion = "服务编译版本号, 勿动~~"
-)
+var (
+	// trpc.adp.kb_config.Admin
+	adminServiceName = fmt.Sprintf("trpc.adp.%s.Admin", trpcx.DungeonForServer("kb_config"))
 
-func init() {
-	rand.Seed(time.Now().UnixNano())
-	clues.Init()
-}
+	// trpc.adp.kb_config.Api
+	apiServiceName = fmt.Sprintf("trpc.adp.%s.Api", trpcx.DungeonForServer("kb_config"))
+)
 
 func main() {
-	defer panicprinter.PrintPanic()
-	runtime0.SetServerVersion(buildVersion)
-	runtime0.PrintVersion()
+	srv := trpcx.NewServer()
 
-	// 服务注册
-	srv := moss.NewServer(
-		moss.WithRegistry(registry.New()),
-		moss.WithTrpcServerOptions(server.WithFilter(pkg.LogFilter)),
-	)
+	// 监听应用配置
+	_ = config.Watch()
 
-	// log
-	cfg := trpc.GlobalConfig()
-	log.Info("\n-------------------------------------------------------------------------------")
-	g0, _ := yaml.Marshal(cfg.Global)
-	log.Infof("\nGlobal:\n%v", encode.String(g0))
-	log.Info("\n-------------------------------------------------------------------------------")
-	s0, _ := yaml.Marshal(cfg.Server)
-	log.Infof("\nServer:\n%v", encode.String(s0))
-	log.Info("\n-------------------------------------------------------------------------------")
-	c0, _ := yaml.Marshal(cfg.Client)
-	log.Infof("\nClient:\n%v", encode.String(c0))
-	log.Info("\n-------------------------------------------------------------------------------")
-	p0, _ := yaml.Marshal(cfg.Plugins)
-	log.Infof("\nPlugins:\n%v", encode.String(p0))
-	log.Info("\n===============================================================================")
+	// 初始化业务 service
+	adminService := newService()
+	apiService := newAPI()
 
-	redis.Init()
+	pb.RegisterAdminService(srv.Service(adminServiceName), adminService)
+	pb.RegisterApiService(srv.Service(apiServiceName), apiService)
+
+	// 注册任务，并开启任务调度
+	_ = initAsync()
+
+	rpcInstance = newRPC()
+
+	// 定时任务
+	registerTimer(srv.Server, adminService, apiService)
+
+	// 应用的检索配置从DB同步到redis
+	// TODO(ericjwang): 确认下，这个应该删除
+	admin.HandleFunc("/app/SyncRetrievalConfigFromDB", adminService.SyncRetrievalConfigFromDB)
+
+	// 检查角色业务资源 (供CAM调用)
+	// [NOTICE] 部署要求: 仅内网访问, 固定URI, HTTP协议, 非鉴权接口
+	// [NOTICE] 变更要求: 变更调整需要提前与CAM同步
+	admin.HandleFunc("/cam/CheckResourceByRoleName", adminService.CheckResourceByRoleName)
 
 	if err := srv.Serve(); err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
+}
+
+// registerTimer 注册定时任务
+func registerTimer(srv *server.Server, svc *service.Service, api *api.Service) {
+	// 自定义 serviceName，本质上这是 redis 中的 key，加个前缀避免冲突。重构过程中之所以这样写，是因为早期就已经是这样的，为了兼容
+	serviceNamer := func(originServiceName string) string {
+		return fmt.Sprintf("lke:knowledge:scheduler:%s", originServiceName)
+	}
+
+	noopHandler := func(ctx context.Context) error {
+		logx.I(ctx, "noopHandler called in worker mode, do nothing")
+		return nil
+	}
+	timers := map[string]func(context.Context) error{
+		"QASimilarTask":                    svc.QASimilarTaskHandler,              // QASimilarTask
+		"DeleteCharSizeExceededTask":       svc.DeleteCharSizeExceededTaskHandler, // DeleteCharSizeExceededTask
+		"CleanVectorSyncHistoryTask":       svc.CleanVectorSyncHistory,            // CleanVectorSyncHistoryTask
+		"UpdateAttributeLabelsTaskPreview": svc.UpdateAttributeLabelsTaskPreview,  // 刷新评测环境属性&标签缓存
+		"UpdateAttributeLabelsTaskProd":    svc.UpdateAttributeLabelsTaskProd,     // 刷新发布环境属性&标签缓存
+		"CleanDatabaseCommonData":          svc.CleanDatabaseCommonData,           // 定时清理已删除的数据
+		"AutoDocRefresh":                   svc.AutoDocRefresh,                    // 定时刷新文档数据
+		"UnfinishedDocParseRefresh":        api.UnfinishedDocParseRefresh,         // 未完成的文档解析刷新任务
+	}
+	for name, handler := range timers {
+		// 注册 scheduler
+		timerx.RegisterRedisScheduler(name, svc.AdminRdb, timerx.WithServiceNamer(serviceNamer))
+
+		// 注册 handler
+		// 如果开启了 worker 模式，就注册个空的 handler，避免定时任务被执行
+		serviceName := fmt.Sprintf("trpc.adp.kb_config.%s", name)
+		timerService := srv.Service(serviceName)
+		if timerService == nil {
+			log.Infof("registerTimer: service %s not found, skip register timer", serviceName)
+			continue
+		}
+		if config.GetMainConfig().EnableWorkerMode {
+			timer.RegisterHandlerService(timerService, noopHandler)
+		} else {
+			timer.RegisterHandlerService(timerService, handler)
+		}
+	}
+
+	// 如果开启了 worker 模式，就不执行异步任务
+	if config.GetMainConfig().EnableWorkerMode {
+		return
+	}
+
+	go svc.GetVectorLogic().DoSync()
 }

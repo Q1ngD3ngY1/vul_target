@@ -3,57 +3,39 @@ package api
 import (
 	"context"
 
-	"git.code.oa.com/trpc-go/trpc-go/log"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/model"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/util"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg/errs"
-	pb "git.woa.com/dialogue-platform/lke_proto/pb-protocol/bot_knowledge_config_server"
+	"git.woa.com/adp/common/x/gox/slicex"
+
+	appConfig "git.woa.com/adp/pb-go/app/app_config"
+	pb "git.woa.com/adp/pb-go/kb/kb_config"
 )
 
-// SynonymsNER 同义词 NER 接口
+func NERInfoAppConfigPB2ServerPB(nerInfo *appConfig.SynonymsNERRsp_NERInfo) *pb.SynonymsNERRsp_NERInfo {
+	return &pb.SynonymsNERRsp_NERInfo{
+		NumTokens:    nerInfo.GetNumTokens(),
+		OriginalText: nerInfo.GetOriginalText(),
+		RefValue:     nerInfo.GetRefValue(),
+	}
+}
+
+func NERInfoAppConfigsPB2ServerPB(nerInfos []*appConfig.SynonymsNERRsp_NERInfo) []*pb.SynonymsNERRsp_NERInfo {
+	return slicex.Map(nerInfos, func(nerInfo *appConfig.SynonymsNERRsp_NERInfo) *pb.SynonymsNERRsp_NERInfo {
+		return NERInfoAppConfigPB2ServerPB(nerInfo)
+	})
+}
+
+// SynonymsNER 同义词 NER(命名实体识别) 接口
 func (s *Service) SynonymsNER(ctx context.Context, req *pb.SynonymsNERReq) (*pb.SynonymsNERRsp, error) {
-	log.InfoContextf(ctx, "SynonymsNER Req: %+v", req)
-	corpID := pkg.CorpID(ctx)
-	robotID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
-	if err != nil {
-		return nil, err
+	newReq := appConfig.SynonymsNERReq{
+		BotBizId: req.GetBotBizId(),
+		Query:    req.GetQuery(),
+		Scenes:   req.GetScenes(),
 	}
-	app, err := s.getAppByAppBizID(ctx, robotID)
-	if err != nil {
-		return nil, errs.ErrRobotNotFound
+	newRsp, err := s.rpc.AppAdmin.SynonymsNER(ctx, &newReq)
+	if newRsp != nil {
+		return &pb.SynonymsNERRsp{
+			ReplacedQuery: newRsp.GetReplacedQuery(),
+			NerInfo:       NERInfoAppConfigsPB2ServerPB(newRsp.GetNerInfo()),
+		}, err
 	}
-	nerReq := s.getNERReq(corpID, app.ID, req)
-	rsp, err := s.dao.GetSynonymsNER(ctx, nerReq)
-	if err != nil {
-		return nil, err
-	}
-	log.InfoContextf(ctx, "SynonymsNER original query: %s, Rsp: %+v", req.Query, rsp)
-
-	return &pb.SynonymsNERRsp{
-		ReplacedQuery: rsp.ReplacedQuery,
-		NerInfo:       s.getNerInfo(rsp.NERInfos),
-	}, nil
-}
-
-func (s *Service) getNERReq(corpID uint64, robotID uint64,
-	req *pb.SynonymsNERReq) *model.SynonymsNERReq {
-	return &model.SynonymsNERReq{
-		CorpID:  corpID,
-		RobotID: robotID,
-		Query:   req.GetQuery(),
-		Scenes:  req.GetScenes(),
-	}
-}
-
-func (s *Service) getNerInfo(nerInfos []*model.NerInfo) []*pb.SynonymsNERRsp_NERInfo {
-	nerInfo := make([]*pb.SynonymsNERRsp_NERInfo, 0, len(nerInfos))
-	for _, info := range nerInfos {
-		nerInfo = append(nerInfo, &pb.SynonymsNERRsp_NERInfo{
-			NumTokens:    uint32(info.NumTokens),
-			OriginalText: info.OriginalText,
-			RefValue:     info.RefValue,
-		})
-	}
-	return nerInfo
+	return nil, err
 }

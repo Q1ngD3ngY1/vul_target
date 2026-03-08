@@ -4,51 +4,26 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg/errs"
-	"math"
 	"time"
 
-	"git.code.oa.com/trpc-go/trpc-database/redis"
-	"git.code.oa.com/trpc-go/trpc-go/log"
+	"git.woa.com/adp/common/x/logx"
+	"git.woa.com/adp/kb/kb-config/pkg/errs"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
 	// LockForSaveDoc 保存文档锁
-	LockForSaveDoc = "qbot:admin:lock:save_doc:%s"
-	// LockForCreateCorp 创建企业锁
-	LockForCreateCorp = "qbot:admin:lock:create_corp:%s"
-	// LockForJoinCorp 加入企业锁
-	LockForJoinCorp = "qbot:admin:lock:join_corp:%s"
-	// LockForCreateRobot 创建机器人
-	LockForCreateRobot = "qbot:admin:lock:create_robot:%d"
+	LockForSaveDoc = "qbot:admin:lock:save_doc:%s:%s"
 	// LockForAuditCheck 审核回调
 	LockForAuditCheck = "qbot:admin:lock:audit_check:%d"
-	// LockForAuditCorp 企业审核锁
-	LockForAuditCorp = "qbot:admin:lock:audit_corp:%d"
-	// LockForCreateRelease 发布锁
-	LockForCreateRelease = "qbot:admin:lock:create_release:%d"
 	// LockForAddUnsatisfiedReply 添加不满意问题锁
 	LockForAddUnsatisfiedReply = "qbot:admin:lock:add_unsatisfied_reply:%s"
-	// LockForUploadSampleFiles 保存样本文件锁
-	LockForUploadSampleFiles = "qbot:admin:lock:upload_sample_files:%s"
-	// LockForCreateTest 创建评测任务锁锁
-	LockForCreateTest = "qbot:admin:lock:create_test:%s"
-	// LockForOperateTest 操作评测任务锁锁,删除，停止，重试等修改操作共享
-	LockForOperateTest = "qbot:admin:lock:operate_test:%d"
 	// LockForUplodAttributeLabel 上传属性标签文件锁
 	LockForUplodAttributeLabel = "qbot:admin:lock:upload_attribute_label_files:%s"
 	// LockForUplodSynonymsList 上传同义词文件锁
 	LockForUplodSynonymsList = "qbot:admin:lock:upload_synonyms_list_files:%s"
-	// LockForCreateAppeal 创建申诉单锁定
-	LockForCreateAppeal = "qbot:admin:lock:create_appeal:%s"
 	// LockForAuditAppeal 申诉单审核锁定
 	LockForAuditAppeal = "qbot:admin:lock:audit_appeal:%d"
-	// LockForActiveProduct 产品开通
-	LockForActiveProduct = "qbot:admin:lock:active_product:%s"
-	// LockForCreateApp 创建应用
-	LockForCreateApp = "qbot:admin:lock:create_app:%d"
-	// LockForTrialProduct 产品试用开通
-	LockForTrialProduct = "qbot:admin:lock:trial_product:%s"
 	// LockTMsgDataCount TMsg数据统计
 	LockTMsgDataCount = "knowledge_config:lock:msg_count:%s"
 	// LockCleanVectorSyncHistory 清理t_vector_sync_history数据用
@@ -77,19 +52,11 @@ const (
 
 // Lock 加锁
 func (d *dao) Lock(ctx context.Context, key string, duration time.Duration) error {
-	t := math.Ceil(duration.Seconds())
-	expire := 1
-	if t > 1.0 {
-		expire = int(t)
-	}
 	value := time.Now().Format("2006-01-02 15:04:05")
-	_, err := redis.String(d.redis.Do(
-		ctx, "SET", key, value, "EX", expire, "NX",
-	))
-
+	err := d.adminRdb.Set(ctx, key, value, duration).Err()
 	if err != nil {
 		// ErrNil 为 key 已存在导致, 为正常错误, 只有非 ErrNil 的错误才需要记录
-		if errors.Is(err, redis.ErrNil) {
+		if errors.Is(err, redis.Nil) {
 			return errs.ErrAlreadyLocked
 		}
 
@@ -103,12 +70,10 @@ func (d *dao) Lock(ctx context.Context, key string, duration time.Duration) erro
 
 // UnLock 解锁
 func (d *dao) UnLock(ctx context.Context, key string) error {
-	_, err := d.redis.Do(ctx, "DEL", key)
-
+	err := d.adminRdb.Del(ctx, key).Err()
 	if err != nil {
 		err = fmt.Errorf("redis解锁失败, key: %s, err: %w", key, err)
-		log.ErrorContext(ctx, err)
-
+		logx.W(ctx, err.Error())
 		return err
 	}
 

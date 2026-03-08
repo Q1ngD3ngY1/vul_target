@@ -1,9 +1,5 @@
 package util
 
-import (
-	"github.com/spf13/cast"
-)
-
 func TranslateTo[T any](source []T, target []T, key func(T) string) (delete []T, exist [][2]T, add []T, err error) {
 	exist = make([][2]T, 0, 2)
 	add = make([]T, 0, 2)
@@ -39,20 +35,4 @@ func TranslateTo[T any](source []T, target []T, key func(T) string) (delete []T,
 		}
 	}
 	return delete, exist, add, nil
-}
-
-func ConvertSliceStringToUint64(srouce []string) []uint64 {
-	res := make([]uint64, 0, len(srouce))
-	for _, v := range srouce {
-		res = append(res, cast.ToUint64(v))
-	}
-	return res
-}
-
-func ConvertToStringSlice[T any](source []T) []string {
-	res := make([]string, 0, len(source))
-	for _, v := range source {
-		res = append(res, cast.ToString(v))
-	}
-	return res
 }

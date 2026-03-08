@@ -2,22 +2,25 @@ package service
 
 import (
 	"context"
-	"git.code.oa.com/trpc-go/trpc-go/log"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/dao"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/logic/common"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/util"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg"
-	pb "git.woa.com/dialogue-platform/lke_proto/pb-protocol/bot_knowledge_config_server"
+
+	"git.woa.com/adp/common/x/contextx"
+	"git.woa.com/adp/common/x/gox/ptrx"
+	"git.woa.com/adp/common/x/logx"
+	"git.woa.com/adp/common/x/utilx"
+	docEntity "git.woa.com/adp/kb/kb-config/internal/entity/document"
+	"git.woa.com/adp/kb/kb-config/internal/util"
+	pb "git.woa.com/adp/pb-go/kb/kb_config"
 )
 
 // ListDocDiffData 获取对比任务结果列表
 func (s *Service) ListDocDiffData(ctx context.Context, req *pb.ListDocDiffDataReq) (*pb.ListDocDiffDataRsp, error) {
-	log.InfoContextf(ctx, "ListDocDiff Req:%+v", req)
+	logx.I(ctx, "ListDocDiff Req:%+v", req)
 	rsp := new(pb.ListDocDiffDataRsp)
-	corpId := pkg.CorpID(ctx)
-	corp, err := s.dao.GetCorpByID(ctx, corpId)
+	corpId := contextx.Metadata(ctx).CorpID()
+	corp, err := s.rpc.PlatformAdmin.DescribeCorpByPrimaryId(ctx, corpId)
+	// corp, err := s.dao.GetCorpByID(ctx, corpId)
 	if err != nil {
-		log.ErrorContextf(ctx, "GetCorpByID err: %+v", err)
+		logx.E(ctx, "GetCorpByID err: %+v", err)
 		return rsp, err
 	}
 	botBizId, err := util.CheckReqBotBizIDUint64(ctx, req.GetAppBizId())
@@ -28,19 +31,19 @@ func (s *Service) ListDocDiffData(ctx context.Context, req *pb.ListDocDiffDataRe
 	if err != nil {
 		return nil, err
 	}
-	isNotDeleted := dao.IsNotDeleted
-	selectColumns := []string{dao.DocDiffDataTblColDiffData}
-	filter := &dao.DocDiffDataFilter{
-		CorpBizId:  corp.BusinessID,
+	selectColumns := []string{docEntity.DocDiffDataTblColDiffData}
+	offset, limit := utilx.Page(req.GetPageNumber(), req.GetPageSize())
+	filter := &docEntity.DocDiffDataFilter{
+		CorpBizId:  corp.GetCorpId(),
 		RobotBizId: botBizId,
 		DiffBizId:  diffBizId,
-		IsDeleted:  &isNotDeleted,
-		Offset:     common.GetOffsetByPage(req.GetPageNumber(), req.GetPageSize()),
-		Limit:      req.GetPageSize(),
+		IsDeleted:  ptrx.Bool(false),
+		Offset:     offset,
+		Limit:      limit,
 	}
-	list, count, err := dao.GetDocDiffDataDao().GetDocDiffDataCountAndList(ctx, selectColumns, filter)
+	list, count, err := s.docLogic.GetDocDiffDataCountAndList(ctx, selectColumns, filter)
 	if err != nil {
-		log.ErrorContextf(ctx, "ListDocDiff err:%+v", err)
+		logx.E(ctx, "ListDocDiff err:%+v", err)
 		return rsp, err
 	}
 	diffDataList := make([]string, len(list))

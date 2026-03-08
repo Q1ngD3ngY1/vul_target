@@ -2,101 +2,42 @@ package service
 
 import (
 	"context"
-	"git.code.oa.com/trpc-go/trpc-go/log"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/config"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/dao"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/model"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg/errs"
-	utilConfig "git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/util/config"
+
+	"git.woa.com/adp/common/x/contextx"
+	"git.woa.com/adp/common/x/errx"
+	"git.woa.com/adp/common/x/gox/ptrx"
+	"git.woa.com/adp/common/x/logx"
+	"git.woa.com/adp/kb/kb-config/internal/config"
+	"git.woa.com/adp/kb/kb-config/internal/entity"
+	"git.woa.com/adp/kb/kb-config/pkg/errs"
+	pm "git.woa.com/adp/pb-go/platform/platform_manager"
 )
 
-// CheckIsUsedCharSizeExceeded 检查已使用是否超出允许的字符了【企业维度和单应用维度】
-func CheckIsUsedCharSizeExceeded(ctx context.Context, d dao.Dao, botBizID, corpID uint64) error {
-
-	// 单应用维度字符超限
-	botUsedCharSize, err := d.GetBotUsedCharSizeUsage(ctx, botBizID)
-	if err != nil {
-		return errs.ErrSystem
-	}
-	if botUsedCharSize > config.GetBotMaxCharSize(ctx, botBizID) {
-		return errs.ErrBotOverCharacterSizeLimit
-	}
-
-	// 企业维度字符超限
-	corp, err := d.GetCorpByID(ctx, corpID)
-	if err != nil {
-		return errs.ErrCorpNotFound
-	}
-	// 如果没有打开集成商字符数校验开关，就不需要对集成商做校验
-	if !utilConfig.GetMainConfig().CheckSystemIntegratorCharacterUsage && d.IsSystemIntegrator(ctx, corp) {
-		return nil
-	}
-	corp, err = d.GetCorpBillingInfo(ctx, corp)
-	if err != nil {
-		return errs.ErrCorpNotFound
-	}
-	usedCharSize, err := d.GetCorpUsedCharSizeUsage(ctx, corpID)
-	if err != nil {
-		return errs.ErrSystem
-	}
-	if corp.IsUsedCharSizeExceeded(int64(usedCharSize)) {
-		return errs.ErrOverCharacterSizeLimit
-	}
-	return nil
-}
-
-// CheckIsCharSizeExceeded 检查字符是否超限
-func CheckIsCharSizeExceeded(ctx context.Context, d dao.Dao, botBizID, corpID uint64, diff int64) error {
-	// 应用维度字符限制
-	botUsedCharSize, err := d.GetBotUsedCharSizeUsage(ctx, botBizID)
-	if err != nil {
-		return errs.ErrSystem
-	}
-	if diff > 0 && uint64(diff)+botUsedCharSize > config.GetBotMaxCharSize(ctx, botBizID) {
-		return errs.ErrBotOverCharacterSizeLimit
-	}
-
-	// 企业维度字符限制
-	corp, err := d.GetCorpByID(ctx, corpID)
-	if err != nil {
-		return errs.ErrCorpNotFound
-	}
-	// 如果没有打开集成商字符数校验开关，就不需要对集成商做校验
-	if !utilConfig.GetMainConfig().CheckSystemIntegratorCharacterUsage && d.IsSystemIntegrator(ctx, corp) {
-		return nil
-	}
-	corp, err = d.GetCorpBillingInfo(ctx, corp)
-	if err != nil {
-		return errs.ErrCorpNotFound
-	}
-	usedCharSize, err := d.GetCorpUsedCharSizeUsage(ctx, corpID)
-	if err != nil {
-		return errs.ErrSystem
-	}
-	if corp.IsCharSizeExceeded(int64(usedCharSize), diff) {
-		return d.ConvertErrMsg(ctx, 0, corpID, errs.ErrOverCharacterSizeLimit)
-	}
-	return nil
-}
-
 // checkSession 校验cookie
-func (s *Service) checkSession(ctx context.Context) (*model.Session, error) {
-	token := pkg.Token(ctx)
-	si, err := s.dao.GetSystemIntegrator(ctx, pkg.Uin(ctx), pkg.SubAccountUin(ctx))
+func (s *Service) checkSession(ctx context.Context) (*entity.Session, error) {
+	md := contextx.Metadata(ctx)
+	token := md.Token()
+	loginUin := md.LoginUin()
+	loginSubAccountUin := md.LoginSubAccountUin()
+
+	si, err := s.rpc.PlatformAdmin.DescribeIntegrator(ctx, loginUin, loginSubAccountUin)
+	// si, err := s.dao.GetSystemIntegrator(ctx, contextx.Metadata(ctx).Uin(), contextx.Metadata(ctx).SubAccountUin())
 	if err != nil {
 		return nil, err
 	}
-	loginUin := pkg.LoginUin(ctx)
-	loginSubAccountUin := pkg.LoginSubAccountUin(ctx)
 	if !si.IsCloudSI() && (loginUin == "" || loginSubAccountUin == "") {
 		return nil, errs.ErrSystemIntegratorUserParams
 	}
 	if si.IsCloudSI() {
-		loginUin = pkg.Uin(ctx)
-		loginSubAccountUin = pkg.SubAccountUin(ctx)
+		loginUin = contextx.Metadata(ctx).Uin()
+		loginSubAccountUin = contextx.Metadata(ctx).SubAccountUin()
 	}
-	session, err := s.dao.GetStaffSession(ctx, si, token, loginUin, loginSubAccountUin)
+	var session *entity.Session
+	if loginSubAccountUin != "" {
+		session, err = s.getStaffCloudSession(ctx, si, loginUin, loginSubAccountUin)
+	} else {
+		session, err = s.dao.GetStaffSession(ctx, token)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -104,16 +45,74 @@ func (s *Service) checkSession(ctx context.Context) (*model.Session, error) {
 		return nil, errs.ErrSessionNotFound
 	}
 	if config.IsDemoModeOpen() && !config.CheckUserIDDemoMode(session.ID) {
-		log.WarnContextf(ctx, "用户ID：%d 未开启演示模式", session.ID)
+		logx.W(ctx, "用户ID：%d 未开启演示模式", session.ID)
 		return nil, errs.ErrSessionNotFound
 	}
 	return session, nil
 }
 
+// getStaffCloudSession 获取腾讯云session
+func (s *Service) getStaffCloudSession(ctx context.Context, si *entity.SystemIntegrator, loginUin, loginSubAccountUin string) (*entity.Session, error) {
+	user, err := s.userLogic.DescribeSIUser(ctx, si.ID, loginUin, loginSubAccountUin)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		logx.W(ctx, "获取用户信息为空 sid:%d loginUin:%s loginSubAccountUin:%s", si.ID, loginUin, loginSubAccountUin)
+		return nil, nil
+	}
+	staffReq := pm.DescribeCorpStaffReq{
+		Status: ptrx.Uint32(entity.StaffStatusValid),
+		UserId: user.ID,
+	}
+	staff, err := s.rpc.PlatformAdmin.DescribeCorpStaff(ctx, &staffReq)
+	// staff, err := d.GetStaffByUserID(ctx, user.ID)
+	if err != nil {
+		if errx.Is(err, errx.ErrNotFound) {
+			logx.W(ctx, "获取员工信息为空 sid:%d loginUin:%s loginSubAccountUin:%s", si.ID, loginUin, loginSubAccountUin)
+			return nil, nil
+		}
+		return nil, err
+	}
+	if staff == nil {
+		logx.W(ctx, "获取员工信息为空 sid:%d loginUin:%s loginSubAccountUin:%s", si.ID, loginUin, loginSubAccountUin)
+		return nil, nil
+	}
+	corp, err := s.rpc.PlatformAdmin.DescribeCorpByPrimaryId(ctx, staff.CorpID)
+	// corp, err := d.GetCorpByID(ctx, staff.CorpPrimaryId)
+	if err != nil {
+		return nil, err
+	}
+	if corp == nil {
+		logx.W(ctx, "获取企业信息为空 sid:%d loginUin:%s loginSubAccountUin:%s", si.ID, loginUin, loginSubAccountUin)
+		return nil, nil
+	}
+	if corp.GetStatus() != entity.CorpStatusValid {
+		return nil, errs.ErrCorpInValid
+	}
+	if corp.Uin != loginUin {
+		return nil, errs.ErrUinNotMatch
+	}
+	if !staff.IsValid() || !user.IsValid() {
+		return nil, errs.ErrStaffInValid
+	}
+	return &entity.Session{
+		ID:            staff.ID,
+		SID:           user.SID,
+		UIN:           user.Uin,
+		SubAccountUin: user.SubAccountUin,
+		BizID:         staff.BusinessID,
+		CorpID:        staff.CorpID,
+		Cellphone:     staff.Cellphone,
+		Status:        staff.Status,
+		ExpireTime:    0,
+	}, nil
+}
+
 // checkLogin 校验登陆态
 func (s *Service) checkLogin(ctx context.Context) error {
-	loginUserType := pkg.LoginUserType(ctx)
-	if loginUserType != model.LoginUserExpType {
+	loginUserType := contextx.Metadata(ctx).LoginUserType()
+	if loginUserType != entity.LoginUserExpType {
 		// 如果普通用户，则是腾讯云登录，本身在底座就做了登录校验
 		return nil
 	}

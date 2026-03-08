@@ -1,18 +1,20 @@
-// Package service 业务逻辑层-客户COS文档
 package service
 
 import (
 	"context"
 	"time"
 
-	"git.code.oa.com/trpc-go/trpc-go/log"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/client"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/config"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/model"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg/errs"
-	pb "git.woa.com/dialogue-platform/lke_proto/pb-protocol/knowledge"
+	"git.woa.com/adp/common/x/logx"
 	jsoniter "github.com/json-iterator/go"
+
+	"git.woa.com/adp/common/x/contextx"
+	"git.woa.com/adp/common/x/encodingx/jsonx"
+	"git.woa.com/adp/common/x/syncx/errgroupx"
+	"git.woa.com/adp/kb/kb-config/internal/config"
+	"git.woa.com/adp/kb/kb-config/internal/entity"
+	kbEntity "git.woa.com/adp/kb/kb-config/internal/entity/kb"
+	"git.woa.com/adp/kb/kb-config/pkg/errs"
+	pb "git.woa.com/adp/pb-go/kb/kb_config"
 	"github.com/tencentyun/cos-go-sdk-v5"
 )
 
@@ -26,25 +28,27 @@ func (s *Service) ListBucketWithCORS(ctx context.Context, req *pb.ListBucketWith
 	var err error
 	rsp := new(pb.ListBucketWithCORSRsp)
 
-	log.InfoContextf(ctx, "ListBucketWithCORS, request: %+v", req)
+	logx.I(ctx, "ListBucketWithCORS, request: %+v", req)
 	defer func() {
-		log.InfoContextf(ctx, "ListBucketWithCORS, response: %+v, elapsed: %d, error: %+v",
+		logx.I(ctx, "ListBucketWithCORS, response: %+v, elapsed: %d, error: %+v",
 			rsp, time.Since(start).Milliseconds(), err)
 	}()
 
-	corpBizID := pkg.CorpBizID(ctx)
+	corpBizID := contextx.Metadata(ctx).CorpBizID()
 	if corpBizID == 0 {
 		err = errs.ErrContextInvalid
 		return rsp, errs.ErrContextInvalid
 	}
 
-	_, err = client.GetAppInfo(ctx, req.GetAppBizId(), model.RunEnvSandbox)
+	_, err = s.rpc.AppAdmin.DescribeAppInfoUsingScenesById(ctx, req.GetAppBizId(), entity.RunEnvSandbox)
 	if err != nil {
 		return rsp, errs.ErrRobotNotFound
 	}
 
-	uin, _ := model.GetLoginUinAndSubAccountUin(ctx)
-	credentialResponse, status, err := s.dao.AssumeServiceRole(ctx, uin,
+	uin, _ := kbEntity.GetLoginUinAndSubAccountUin(ctx)
+
+	logx.I(ctx, "ListBucketWithCORS, uin: %+v", uin)
+	credentialResponse, status, err := s.rpc.Cloud.AssumeServiceRole(ctx, uin,
 		config.App().COSDocumentConfig.ServiceRole, 0, nil)
 	if err != nil {
 		return rsp, errs.ErrAssumeServiceRoleFailed
@@ -53,32 +57,54 @@ func (s *Service) ListBucketWithCORS(ctx context.Context, req *pb.ListBucketWith
 		err = errs.ErrServiceRoleUnavailable
 		return rsp, err
 	}
-	log.DebugContextf(ctx, "ListBucketWithCORS, credentialResponse: %+v", credentialResponse)
+	responseText, _ := jsoniter.MarshalToString(credentialResponse)
+	logx.D(ctx, "ListBucketWithCORS, credentialResponse: %s, status: %+v",
+		responseText, status)
 
 	// NOTICE: 调用cos接口获取存储桶列表
-	bucketResponse, err := s.dao.ListBucketByCredential(ctx, credentialResponse.Credentials)
+	bucketResponse, err := s.rpc.COS.ListBucketByCredential(ctx, credentialResponse.Credentials)
 	if err != nil {
 		return rsp, errs.ErrListBucketWithCORSFailed
 	}
 
 	if len(bucketResponse.Buckets) == 0 {
-		log.InfoContextf(ctx, "ListBucketWithCORS, buckets empty, bucketResponse: %+v", bucketResponse)
+		logx.I(ctx, "ListBucketWithCORS, buckets empty, bucketResponse: %+v", bucketResponse)
 		return rsp, nil
 	}
 
 	// NOTICE: 添加存储桶CORS
-	corsList := make([]string, 0)
+	corsList := make([]string, len(bucketResponse.Buckets))
 
-	for _, bucket := range bucketResponse.Buckets {
-		corsRule, _, err := s.dao.AddBucketCORSRule(ctx, credentialResponse.Credentials,
-			bucket.Name, bucket.Region, config.App().COSDocumentConfig.CORSOrigin)
-		if err != nil {
-			return rsp, errs.ErrListBucketWithCORSFailed
-		}
+	wg := errgroupx.New()
+	concurrency := config.App().COSDocumentConfig.BucketCORSConcurrency
+	if concurrency <= 0 {
+		concurrency = 5
+	}
+	wg.SetLimit(concurrency)
+	for i, bucket := range bucketResponse.Buckets {
+		currentIndex := i
+		currentBucket := bucket
+		wg.Go(func() error {
+			corsRule, add, err := s.rpc.COS.AddBucketCORSRule(ctx, credentialResponse.Credentials,
+				currentBucket.Name, currentBucket.Region, config.App().COSDocumentConfig.CORSOrigin)
+			if err != nil {
+				// NOTICE: 如果添加CORS失败，则跳过该存储桶
+				logx.W(ctx, "ListBucketWithCORS, AddBucketCORSRule failed, bucket[%d]: %+v, error: %+v",
+					currentIndex, currentBucket, err)
+				return nil
+			}
 
-		corsText, _ := jsoniter.MarshalToString(corsRule)
-		log.InfoContextf(ctx, "ListBucketWithCORS, corsText: %+v", corsText)
-		corsList = append(corsList, corsText)
+			corsText, _ := jsonx.MarshalToString(corsRule)
+			logx.I(ctx, "ListBucketWithCORS, bucketName[%d]: %s, add: %t, corsText: %+v",
+				currentIndex, currentBucket.Name, add, corsText)
+			corsList[currentIndex] = corsText
+			return nil
+		})
+	}
+
+	if err = wg.Wait(); err != nil {
+		logx.W(ctx, "ListBucketWithCORS, wg.Wait failed, error: %+v", err)
+		return rsp, errs.ErrListBucketWithCORSFailed
 	}
 
 	// NOTICE: 返回存储桶列表
@@ -89,6 +115,10 @@ func (s *Service) ListBucketWithCORS(ctx context.Context, req *pb.ListBucketWith
 func (s *Service) generateBucketWithCORSList(ctx context.Context,
 	bucketList []cos.Bucket, corsList []string) []*pb.BucketWithCORS {
 	bucketWithCORSList := make([]*pb.BucketWithCORS, 0)
+	if len(bucketList) == 0 || len(corsList) == 0 {
+		return bucketWithCORSList
+	}
+
 	for index, bucket := range bucketList {
 		bucketWithCORS := &pb.BucketWithCORS{
 			BucketName:   bucket.Name,
@@ -96,23 +126,26 @@ func (s *Service) generateBucketWithCORSList(ctx context.Context,
 			BucketType:   bucket.BucketType,
 		}
 
+		// NOTICE: 填充 BucketCors
+		if index < len(corsList) {
+			if len(corsList[index]) == 0 {
+				continue
+			}
+
+			bucketWithCORS.BucketCors = corsList[index]
+		}
+
 		// NOTICE: 填充 CreateTime
 		createTime, err := time.Parse(time.RFC3339, bucket.CreationDate)
 		if err == nil {
 			bucketWithCORS.CreateTime = createTime.Unix()
 		} else {
-			log.WarnContextf(ctx, "generateBucketWithCORSList, time.Parse failed, "+
+			logx.W(ctx, "generateBucketWithCORSList, time.Parse failed, "+
 				"creationDate: %s, error: %+v", bucket.CreationDate, err)
-		}
-
-		// NOTICE: 填充 BucketCors
-		if corsList != nil && index < len(corsList) {
-			//bucketWithCORS.BucketConfig = corsList[index]
-			bucketWithCORS.BucketCors = corsList[index]
 		}
 
 		bucketWithCORSList = append(bucketWithCORSList, bucketWithCORS)
 	}
-	
+
 	return bucketWithCORSList
 }

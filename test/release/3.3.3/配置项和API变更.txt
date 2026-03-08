@@ -1,0 +1,59 @@
+----------CAPI变更-----------
+1.ListReferShareKnowledge 新增字段Total
+----------CAPI变更-----------
+
+
+---------配置变更-----------
+1、application.yaml变更
+db_source:
+  default_select_limit: 500  # 从100 修改到500
+
+tasks:
+  export_kb_package:
+    runners: 4 #处理协程数，无法动态调整
+    retry_wait_time: 1m #重试等待时间
+    max_retry: 1 #最大重试次数
+    timeout: 40m #超时时间
+    fail_timeout: 3s # 失败回调超时
+    delay: 0s #启动延迟
+    batch:  3
+    batch_size: 0
+  import_kb_package:
+    runners: 1 #处理协程数，无法动态调整
+    retry_wait_time: 1m #重试等待时间
+    max_retry: 1 #最大重试次数
+    timeout: 40m #超时时间
+    fail_timeout: 3s # 失败回调超时
+    delay: 0s #启动延迟
+    batch:  1
+    batch_size: 0
+
+
+kb_package_config:
+  package_size_limit_mb: 100 #单位M，全局默认限制
+  import_qa_concurrency: 20 #问答导入并发
+  export_doc_concurrency: 5 #文档导出并发
+  import_doc_concurrency: 10 #文档导入并发
+  zip_buffer_size: 8 # zip缓冲区大小，默认为8MB
+  app_package_size_limit: # 按应用配置的知识包大小限制（可选），key为appBizId，value为限制大小（单位MB）
+    2013863985395329472: 200 # 示例：应用限制为100MB
+    2013863985395329472: 200 # 示例：应用限制为200MB
+  secret_key: "your-secret-key-here" # 用于文件哈希计算的秘钥，防止CRC64被随意破解
+
+2、	kb-config_zh-CN.json 变更
+  "KeyImportKbPackageFailed": "知识库导入失败",
+  "KeyExportKbPackageFailed": "知识库导出失败"
+
+3、kb-config_en-US.json 变更
+  "KeyImportKbPackageFailed": "Knowledge base import failed.",
+  "KeyExportKbPackageFailed": "Knowledge base export failed."
+
+4、main.yaml 变更
+handle_tasks:
+  - "export_kb_package"
+  - "import_kb_package"
+
+5、error_en-US.json
+   "ErrExportKbPackageOverMaxLimit": "Export failed, the knowledge base package exceeds the maximum limit."
+6、error_zh-CN.json
+    "ErrExportKbPackageOverMaxLimit": "导出失败，知识库包超出最大限制"

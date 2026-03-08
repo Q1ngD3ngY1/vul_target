@@ -3,11 +3,11 @@ package api
 import (
 	"testing"
 
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/model"
+	"git.woa.com/adp/kb/kb-config/internal/entity"
 )
 
 func Test_patchConfidence(t *testing.T) {
-	refers := []model.Refer{
+	refers := []entity.Refer{
 		{OrgData: "核心人员通话记录: \n            \n            \n            \n            \n            | 会话人员  |\n            | --- |\n            | 张三  |\n            \n            \n            \n            "},
 		{OrgData: "核心人员通话记录: \n            \n            \n            \n            \n            |  | 会话记录  | 服务内容  |\n            | --- | --- | --- |\n            | 张三  | [\"服务态度差\",\"业务能力差\",\"回复超级慢\",\"问题未解决\"],[\"产品不满意\",\"政策不满意\",\"活动不满意\",\"方案不满意\"]]}2023-07-01 22:09:18 {SYSTEM} 满意度评价已发送用户 | 保客咨询，汽车信号弱，手机开不了车门，海豚  |\n            \n            \n            \n            "},
 		{OrgData: "核心人员通话记录: \n            \n            \n            \n            \n            | 会话人员  |\n            | --- |\n            | 李四  |\n            \n            \n            \n            "},

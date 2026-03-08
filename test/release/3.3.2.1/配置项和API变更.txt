@@ -1,0 +1,132 @@
+---------配置变更-----------
+1、client.yaml变更
+    - callee: trpc.adp.platform_charger.Finance
+      namespace: Test
+      target: ${KB_PLATFORM_CHARGER_FINANCE_TARGET}
+      network: tcp
+      protocol: trpc
+      timeout: 20000
+    - name: trpc.adp.app_config.Api
+      namespace: Test
+      target: ${KB_APP_CONFIG_API_TARGET}
+      timeout: 30000
+    - name: trpc.adp.platform_manager.Api
+      namespace: Test
+      target: ${KB_PLATFORM_MANAGER_API_TARGET}
+      timeout: 30000
+
+2、placeholder.yaml变更
+    KB_APP_CONFIG_API_TARGET: polaris://trpc.adp.app_config.Api
+    KB_PLATFORM_CHARGER_FINANCE_TARGET: polaris://qbot.finance.finance.Finance
+    KB_PLATFORM_MANAGER_API_TARGET: polaris://trpc.adp.platform_manager.Api
+
+3、application.yaml变更
+# 计费开关
+finance:
+  disabled: false
+  # 模型名到计费项的映射
+  billing_model_map:
+    sn-large-multi-language-v0.2.5:
+      model_name: youtu-embedding
+    sn-llm-embedding-2b-v0.2.2:
+      model_name: Youtu/youtu-embedding
+    sn-llm-reranker-2b-v0.2:
+      model_name: Youtu/youtu-reranker-llm
+    sn-reranker-large-v0.4:
+      model_name: Youtu/youtu-reranker
+  embedding_and_rerank:
+    report_switch: true
+    search_release_switch: true
+db_source:
+  # 不安全的DSN参数列表，用于安全检查
+  unsafe_dsn_params:
+    # MySQL 不安全参数
+    - "allowAllFiles"           # 允许读取服务器上的任意文件，存在严重安全风险
+    - "allowLoadLocalInfile"    # 允许LOAD DATA LOCAL INFILE，可能导致本地文件泄露
+
+
+超量失效的延时修改为7天
+  resource_expire:
+    runners: 1
+    retry_wait_time: 1m
+    max_retry: 1
+    timeout: 2h
+    fail_timeout: 3s
+    delay: 168h  # 超量失效7天后开始处理
+    batch: 1
+    batch_size: 0
+
+---------配置变更-----------
+kb-config_zh-CN.json
+  "KeyCustomFileParseModelDesc": "请按照您自定义创建的文档解析服务支持的文件格式上传",
+  "KeyDefaultFileParseModelDesc": "文档支持pdf、doc、docx、ppt、mhtml、pptx、wps、ppsx，单个文件不超过200MB；\nkeynote、pages，单个文件不超过50MB；\nxlsx、xls、csv、md、txt、html、xmind、json、xml、log、numbers（限制行数3万行、列数180列），单个文件不超过20MB；\n图片支持jpg、png、jpeg、tiff、bmp、gif，单个文件不超过50MB；\n系统将自动判断表格类型，针对不规范表格，将尝试智能转化为结构化表格",
+  "KeyAliYunSyncFileParseModelDesc": "请按照阿里电子文档解析服务支持的文件格式上传",
+  "KeyAliYunAsyncFileParseModelDesc": "请按照阿里文档解析服务支持的文件格式上传",
+  "KeyKnowledgeBaseModelFileParseModel": "知识库模型-文档解析模型"
+    "KeyKnowledgeBaseCapacityInsufficientKnowledgeExpired": "知识库容量不足，部分知识已失效，失效180天后自动删除，请及时购买套餐包或预付费资源包，购买后需要手动恢复知识。"
+
+kb-config_en-US.json
+    "KeyCustomFileParseModelDesc": "Please upload according to the file formats supported by your custom ADP document parsing service in model gallery.",
+    "KeyDefaultFileParseModelDesc": "Supported document types include pdf, doc, docx, ppt, mhtml, pptx, wps, ppsx, with a maximum file size of 200MB per file;\nkeynote and pages files have a maximum size of 50MB per file;\nxlsx, xls, csv, md, txt, html, xmind, json, xml, log, numbers (limited to 30,000 rows and 180 columns), with a maximum file size of 20MB per file;\nSupported image types include jpg, png, jpeg, tiff, bmp, gif, with a maximum file size of 50MB per file;\nThe system will automatically determine table types. For non-standard tables, intelligent conversion to structured tables will be attempted.",
+    "KeyAliYunSyncFileParseModelDesc": "Please upload according to the file formats supported by Alibaba Cloud Electronic Document Parsing Service.",
+    "KeyAliYunAsyncFileParseModelDesc": "Please upload according to the file formats supported by Alibaba Cloud Document Parsing Service.",
+    "KeyKnowledgeBaseModelFileParseModel": "Knowledge Base Model - Document Parsing Model",
+    "KeyKnowledgeBaseModeINL2SQLModel": "Knowledge Base Model - NL2SQL Rewrite Model",
+    "KeyTemperatureEnable": "Temperature Setting",
+    "KeyTemperature": "Temperature",
+    "KeyTopPEnable": "Top P Setting",
+    "KeyTopP": "Top P",
+    "KeyMaxTokensEnable": "Max Output Length Setting",
+    "KeyMaxTokens": "Max Output Length",
+    "KeyRandomSeedEnable": "Random Seed Setting",
+    "KeyRandomSeed": "Random Seed",
+    "KeyPresencePenaltyEnable": "Presence Penalty Setting",
+    "KeyPresencePenalty": "Presence Penalty",
+    "KeyFrequencyPenaltyEnable": "Frequency Penalty Setting",
+    "KeyFrequencyPenalty": "Frequency Penalty",
+    "KeyRepetitionPenaltyEnable": "Repetition Penalty Setting",
+    "KeyRepetitionPenalty": "Repetition Penalty",
+    "KeyStopSequenceEnable": "Stop Sequence Setting",
+    "KeyStopSequence": "Stop Sequence",
+    "KeyReplyFormat": "Output Format",
+    "KeyHistoryLimit": "History Limit",
+    "KeyKnowledgeBaseModelVectorModel": "Knowledge Base Model - Vector Model",
+    "KeyKnowledgeBaseCapacityInsufficientKnowledgeExpired": "Knowledge base capacity exceeded. Expired entries will auto-delete after 180 days. Please purchase a package or prepaid credits, then manually restore them.",
+
+
+aplication.yaml中
+  knowledge_delete:
+    retry_wait_time: 5m  --> 修改为5分钟  防止app缓存导致删除失败，阻塞其他删除任务
+    max_retry: 30 --> 修改为30次
+
+
+----------CAPI变更-----------
+1. GetCharacterUsage入参和出参变更
+    新增入参
+    message GetCharacterUsageReq {
+      string knowledge_base_id = 1; // 知识库ID,如果指定，则返回该知识库的使用容量和超量失效容量
+    }
+    新增出参
+    message GetCharacterUsageRsp {
+      uint64 total_capacity = 4; // 企业可用总容量（字节）
+      uint64 used_capacity = 5; // 已使用的容量（字节）
+      uint64 exceeded_invalid_capacity = 6; // 已超量失效的容量（字节）
+      uint32 capacity_status = 7;  // 企业容量状态，0:正常，1:超量但可用（pu抵扣），2：超量不可用
+    }
+
+2. ListQA，出参变更,新增字段
+    uint64 qa_size = 27; // 问答大小（单位：字节）含相似问
+
+3. ListDoc，出参变更,新增字段
+    uint64 doc_size = 38; // 文档大小（单位：字节）
+
+4.DescribeExceededKnowledgeList 入参出参变更，新增字段
+    // 入参
+    appBizId，不兼容变更，从uint64改为string
+
+    // 出参
+    message DescribeExceededKnowledgeListRsp {
+    // 超量失效容量，单位：字节
+      uint64 exceeded_invalid_capacity = 7;
+    }
+----------CAPI变更-----------

@@ -3,29 +3,30 @@ package service
 import (
 	"context"
 
-	"git.code.oa.com/trpc-go/trpc-go/log"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/dao"
-	Permis "git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/logic/permissions"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/model"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/util"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg/errs"
-	utilConfig "git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/util/config"
-	pb "git.woa.com/dialogue-platform/lke_proto/pb-protocol/bot_knowledge_config_server"
+	"git.woa.com/adp/common/x/contextx"
+	"git.woa.com/adp/common/x/gox/convx"
+	"git.woa.com/adp/common/x/gox/slicex"
+	"git.woa.com/adp/common/x/logx"
+	"git.woa.com/adp/kb/kb-config/internal/config"
+	"git.woa.com/adp/kb/kb-config/internal/entity"
+	"git.woa.com/adp/kb/kb-config/pkg/errs"
+	pb "git.woa.com/adp/pb-go/kb/kb_config"
 	"github.com/spf13/cast"
 )
 
 // CreateKnowledgeRole 保存角色
 func (s *Service) CreateKnowledgeRole(ctx context.Context, req *pb.CreateRoleReq) (
 	rsp *pb.CreateRoleRsp, err error) {
-	app, err := s.dao.GetAppByAppBizID(ctx, cast.ToUint64(req.GetAppBizId()))
+	app, err := s.rpc.AppAdmin.DescribeAppById(ctx, cast.ToUint64(req.GetAppBizId()))
+	// app, err := s.dao.GetAppByAppBizID(ctx, cast.ToUint64(req.GetAppBizId()))
 	if err != nil || app == nil {
-		log.ErrorContextf(ctx, "GetAppByAppBizID err:%v", err)
+		logx.E(ctx, "GetAppByAppBizID err:%v", err)
 		return nil, errs.ErrGetAppFail
 	}
-	ctx = pkg.WithAppID(ctx, app.ID)
-	ctx = pkg.WithAppName(ctx, app.Name)
-	log.InfoContextf(ctx, "CreateRole req:%v", req)
+	md := contextx.Metadata(ctx)
+	md.WithAppID(app.PrimaryId)
+	md.WithAppName(app.Name)
+	logx.I(ctx, "CreateRole req:%v", req)
 	modifyReq := &pb.ModifyReq{
 		AppBizId:    req.GetAppBizId(),
 		Name:        req.GetName(),
@@ -33,95 +34,100 @@ func (s *Service) CreateKnowledgeRole(ctx context.Context, req *pb.CreateRoleReq
 		KnowChoose:  req.GetKnowChoose(),
 		Description: req.GetDescription(),
 		RoleBizId:   "",
-		Type:        model.KnowledgeRoleTypeCustom,
+		Type:        entity.KnowledgeRoleTypeCustom,
 	}
 	if err = s.checkRoleReq(ctx, modifyReq, true); err != nil {
 		return rsp, err
 	}
-	totalCnt, _, err := s.permisLogic.ListKnowledgeRoles(ctx, &dao.KnowledgeRoleReq{
-		KnowledgeBase: dao.KnowledgeBase{
-			CorpBizID: pkg.CorpBizID(ctx),
-			AppBizID:  cast.ToUint64(req.GetAppBizId()),
-			Limit:     -1, // 仅查询数量
-		},
-	})
+	totalCnt, _, err := s.userLogic.DescribeKnowledgeRoleList(ctx,
+		contextx.Metadata(ctx).CorpBizID(), cast.ToUint64(req.GetAppBizId()),
+		&entity.KnowledgeRoleFilter{
+			Limit:     -1,
+			NeedCount: true,
+		})
 	if err != nil {
-		log.ErrorContextf(ctx, "ListKnowledgeRoles err:%v", err)
+		logx.E(ctx, "CreateKnowledgeRole|DescribeKnowledgeRoleList err:%v", err)
 		return nil, errs.ErrGetRoleListFail
 	}
-	roleMax := utilConfig.GetMainConfig().Permissions.RoleMaxLimit
+	roleMax := config.GetMainConfig().Permissions.RoleMaxLimit
 	if totalCnt >= int64(roleMax) {
-		log.ErrorContextf(ctx, "role max limit:%d - %d", totalCnt, roleMax)
+		logx.E(ctx, "role max limit:%d - %d", totalCnt, roleMax)
 		return nil, errs.ErrRoleMaxLimit
 	}
 
-	roleBizId, syncInfos, err := s.permisLogic.ModifyRole(ctx, modifyReq, true)
+	roleBizId, syncInfos, err := s.userLogic.ModifyRole(ctx, &entity.KnowledgeRole{
+		AppBizID:    cast.ToUint64(modifyReq.GetAppBizId()),
+		Name:        modifyReq.GetName(),
+		SearchType:  cast.ToInt8(modifyReq.GetSearchType()),
+		Description: modifyReq.GetDescription(),
+		Type:        entity.KnowledgeRoleTypeCustom,
+	}, knowledgeChoosesPB2DO(modifyReq.KnowChoose), true)
 	if err != nil {
-		log.ErrorContextf(ctx, "CreateRole err:%v", err)
+		logx.E(ctx, "CreateRole err:%v", err)
 		return nil, err
 	}
-	s.permisLogic.RoleSyncInfos(ctx, app.BusinessID, roleBizId, syncInfos)
+	s.userLogic.RoleSyncInfos(ctx, app.BizId, roleBizId, syncInfos)
 	rsp = &pb.CreateRoleRsp{
 		RoleBizId: roleBizId,
 	}
-	log.InfoContextf(ctx, "CreateRole rsp:%v", roleBizId)
+	logx.I(ctx, "CreateRole rsp:%v", roleBizId)
 	return rsp, err
 }
 
 func (s *Service) checkRoleReq(ctx context.Context, req *pb.ModifyReq, isAdd bool) error {
-	log.InfoContextf(ctx, "checkRoleReq req:%v", req)
-	nameMin := utilConfig.GetMainConfig().Permissions.RoleNameMinLimit
-	nameMax := utilConfig.GetMainConfig().Permissions.RoleNameMaxLimit
+	logx.I(ctx, "checkRoleReq req:%v", req)
+	nameMin := config.GetMainConfig().Permissions.RoleNameMinLimit
+	nameMax := config.GetMainConfig().Permissions.RoleNameMaxLimit
 	if len([]rune(req.GetName())) < nameMin || len([]rune(req.GetName())) > nameMax {
-		log.ErrorContextf(ctx, "role name length is not in limit, name:%s, min:%d, max:%d", req.GetName(), nameMin, nameMax)
+		logx.E(ctx, "role name length is not in limit, name:%s, min:%d, max:%d", req.GetName(), nameMin, nameMax)
 		return errs.ErrRoleNameFail
 	}
-	if pkg.CorpBizID(ctx) == 0 || req.GetAppBizId() == "" {
-		log.ErrorContextf(ctx, "checkRoleReq corpApp:%s", req.GetAppBizId())
+	if contextx.Metadata(ctx).CorpBizID() == 0 || req.GetAppBizId() == "" {
+		logx.E(ctx, "checkRoleReq corpApp:%s", req.GetAppBizId())
 		return errs.ErrCommonFail
 	}
-	if req.GetSearchType() == 0 || req.GetSearchType() > model.RoleChooseKnow {
-		log.ErrorContextf(ctx, "checkRoleReq searchType:%d", req.GetSearchType())
+	if req.GetSearchType() == 0 || req.GetSearchType() > entity.RoleChooseKnow {
+		logx.E(ctx, "checkRoleReq searchType:%d", req.GetSearchType())
 		return errs.ErrRoleSearchTypeFail
 	}
-	if req.GetType() == 0 || req.GetType() > model.KnowledgeRoleTypeCustom {
-		log.ErrorContextf(ctx, "checkRoleReq type:%d", req.GetType())
+	if req.GetType() == 0 || req.GetType() > entity.KnowledgeRoleTypeCustom {
+		logx.E(ctx, "checkRoleReq type:%d", req.GetType())
 		return errs.ErrRoleTypeFail
 	}
 
 	for _, v := range req.GetKnowChoose() {
 		if v.GetKnowledgeBizId() == "" || v.GetKnowledgeBizId() == "0" { // 知识库业务ID不能为空
-			log.ErrorContextf(ctx, "checkRoleReq GetKnowledgeBizId:%s", v.GetKnowledgeBizId())
+			logx.E(ctx, "checkRoleReq GetKnowledgeBizId:%s", v.GetKnowledgeBizId())
 			return errs.ErrRoleKnowledgeFail
 		}
-		if v.Type == 0 || v.Type > model.KnowPublic {
-			log.ErrorContextf(ctx, "checkRoleReq type:%d", v.Type)
+		if v.Type == 0 || v.Type > entity.KnowPublic {
+			logx.E(ctx, "checkRoleReq type:%d", v.Type)
 			return errs.ErrRoleKnowledgeTypeFail
 		}
 
 		switch v.SearchType {
-		case model.KnowSearchAll: // 全部
+		case entity.KnowSearchAll: // 全部
 			if len(v.DbBizIds) != 0 || len(v.DocBizIds) != 0 || len(v.QuesAnsBizIds) != 0 || len(v.DocCateBizIds) != 0 ||
 				len(v.QuesAnsCateBizIds) != 0 || len(v.Labels) != 0 {
-				log.ErrorContextf(ctx, "checkRoleReq SearchType:%d", v.SearchType)
+				logx.E(ctx, "checkRoleReq SearchType:%d", v.SearchType)
 				return errs.ErrRoleKnowledgeFail
 			}
 			if v.Condition != 0 {
 				return errs.ErrRoleConditionFail
 			}
-		case model.KnowSearchSpecial: // 按特定知识
+		case entity.KnowSearchSpecial: // 按特定知识
 			if len(v.DocBizIds) == 0 && len(v.QuesAnsBizIds) == 0 && len(v.DocCateBizIds) == 0 &&
 				len(v.QuesAnsCateBizIds) == 0 && len(v.DbBizIds) == 0 {
-				log.ErrorContextf(ctx, "checkRoleReq SearchType:%d %+v", v.SearchType, v)
+				logx.E(ctx, "checkRoleReq SearchType:%d %+v", v.SearchType, v)
 				return errs.ErrRoleKnowledgeFail
 			}
 			if v.Condition != 0 {
 				return errs.ErrRoleConditionFail
 			}
-		case model.KnowSearchLabel: // 按标签
+		case entity.KnowSearchLabel: // 按标签
 			if len(v.DbBizIds) != 0 || len(v.DocBizIds) != 0 || len(v.QuesAnsBizIds) != 0 || len(v.DocCateBizIds) != 0 ||
-				len(v.QuesAnsCateBizIds) != 0 || v.Condition == 0 || v.Condition > model.ConditionLogicOr || len(v.Labels) == 0 {
-				log.ErrorContextf(ctx, "checkRoleReq SearchType:%d", v.SearchType)
+				len(v.QuesAnsCateBizIds) != 0 || v.Condition == 0 || v.Condition > entity.ConditionLogicOr || len(v.Labels) == 0 {
+				logx.E(ctx, "checkRoleReq SearchType:%d", v.SearchType)
 				return errs.ErrRoleKnowledgeFail
 			}
 		default:
@@ -134,14 +140,14 @@ func (s *Service) checkRoleReq(ctx context.Context, req *pb.ModifyReq, isAdd boo
 			return errs.ErrRoleKnowledgeFail
 		}
 		targetKnowledgeMap[v.GetKnowledgeBizId()] = struct{}{}
-		if err := s.permisLogic.CheckKnowChoose(ctx, cast.ToUint64(req.GetRoleBizId()), v); err != nil {
-			log.ErrorContextf(ctx, "CheckKnowChoose err:%v", err)
+		if err := s.userLogic.VerifyKnowChoose(ctx, cast.ToUint64(req.GetRoleBizId()), knowledgeChoosePB2DO(v)); err != nil {
+			logx.E(ctx, "CheckKnowChoose err:%v", err)
 			return errs.ErrRoleKnowledgeFail
 		}
 	}
 
 	if isAdd { // 创建角色检查名字是否重复
-		exist, err := s.permisLogic.CheckRoleExist(ctx, cast.ToUint64(req.GetAppBizId()), 0, req.GetName())
+		exist, err := s.userLogic.VerifyRoleExist(ctx, cast.ToUint64(req.GetAppBizId()), 0, req.GetName())
 		if err != nil {
 			return errs.ErrGetRoleListFail
 		}
@@ -152,7 +158,7 @@ func (s *Service) checkRoleReq(ctx context.Context, req *pb.ModifyReq, isAdd boo
 		if req.GetRoleBizId() == "" || req.GetRoleBizId() == "0" {
 			return errs.ErrGetRoleListFail
 		}
-		exist, err := s.permisLogic.CheckRoleExist(ctx,
+		exist, err := s.userLogic.VerifyRoleExist(ctx,
 			cast.ToUint64(req.GetAppBizId()), cast.ToUint64(req.GetRoleBizId()), "")
 		if err != nil {
 			return errs.ErrGetRoleListFail
@@ -164,55 +170,68 @@ func (s *Service) checkRoleReq(ctx context.Context, req *pb.ModifyReq, isAdd boo
 	return nil
 }
 
-// ModifyRole implements bot_knowledge_config_server.AdminService.
+// ModifyKnowledgeRole implements bot_knowledge_config_server.AdminService.
 func (s *Service) ModifyKnowledgeRole(ctx context.Context, req *pb.ModifyReq) (*pb.ModifyRsp, error) {
-	app, err := s.dao.GetAppByAppBizID(ctx, cast.ToUint64(req.GetAppBizId()))
+	app, err := s.rpc.AppAdmin.DescribeAppById(ctx, cast.ToUint64(req.GetAppBizId()))
+	// app, err := s.dao.GetAppByAppBizID(ctx, cast.ToUint64(req.GetAppBizId()))
 	if err != nil || app == nil {
-		log.ErrorContextf(ctx, "GetAppByAppBizID err:%v", err)
+		logx.E(ctx, "GetAppByAppBizID err:%v", err)
 		return nil, errs.ErrGetAppFail
 	}
-	ctx = pkg.WithAppID(ctx, app.ID)
-	ctx = pkg.WithAppName(ctx, app.Name)
-	log.InfoContextf(ctx, "ModifyRole req:%v", req)
+	md := contextx.Metadata(ctx)
+	md.WithAppID(app.PrimaryId)
+	md.WithAppName(app.Name)
+	logx.I(ctx, "ModifyRole req:%v", req)
 	if err := s.checkRoleReq(ctx, req, false); err != nil {
 		return nil, err
 	}
 
-	if req.GetType() == model.KnowledgeRoleTypePreset { // 编辑默认角色
-		id, _, err := s.permisLogic.CheckPresetRole(ctx, cast.ToUint64(req.GetAppBizId()))
+	role := &entity.KnowledgeRole{
+		AppBizID:    cast.ToUint64(req.GetAppBizId()),
+		Name:        req.GetName(),
+		SearchType:  cast.ToInt8(req.GetSearchType()),
+		Description: req.GetDescription(),
+		Type:        int8(req.GetType()),
+		BusinessID:  cast.ToUint64(req.GetRoleBizId()),
+	}
+	if req.GetType() == entity.KnowledgeRoleTypePreset { // 编辑默认角色
+		id, _, err := s.userLogic.VerifyPresetRole(ctx, cast.ToUint64(req.GetAppBizId()))
 		if err != nil {
-			log.InfoContextf(ctx, "checkPresetRole err:%v", err)
+			logx.I(ctx, "checkPresetRole err:%v", err)
 			return nil, err
 		}
 		if id != 0 {
-			req.RoleBizId = cast.ToString(id)
+			role.BusinessID = id
 		}
 	}
 
-	roleBizID, syncInfos, err := s.permisLogic.ModifyRole(ctx, req, false)
+	roleBizID, syncInfos, err := s.userLogic.ModifyRole(ctx, role, knowledgeChoosesPB2DO(req.KnowChoose), false)
 	if err != nil {
-		log.ErrorContextf(ctx, "ModifyRole err:%v", err)
+		logx.E(ctx, "ModifyRole err:%v", err)
 		return nil, errs.ErrModifyQaExpireFail
 	}
-	s.permisLogic.RoleSyncInfos(ctx, app.BusinessID, roleBizID, syncInfos)
+	s.userLogic.RoleSyncInfos(ctx, app.BizId, roleBizID, syncInfos)
 	return &pb.ModifyRsp{}, nil
 }
 
 // CheckDeleteRole implements bot_knowledge_config_server.AdminService.
+// 检查角色是否可删除
 func (s *Service) CheckDeleteRole(ctx context.Context, req *pb.CheckDeleteRoleReq) (*pb.CheckDeleteRoleRsp, error) {
-	app, err := s.dao.GetAppByAppBizID(ctx, cast.ToUint64(req.GetAppBizId()))
+	app, err := s.rpc.AppAdmin.DescribeAppById(ctx, cast.ToUint64(req.GetAppBizId()))
+	// app, err := s.dao.GetAppByAppBizID(ctx, cast.ToUint64(req.GetAppBizId()))
 	if err != nil || app == nil {
-		log.ErrorContextf(ctx, "GetAppByAppBizID err:%v", err)
+		logx.E(ctx, "GetAppByAppBizID err:%v", err)
 		return nil, errs.ErrGetAppFail
 	}
-	ctx = pkg.WithAppID(ctx, app.ID)
-	ctx = pkg.WithAppName(ctx, app.Name)
-	log.InfoContextf(ctx, "CheckDeleteRole req:%v", req)
-	exists, err := s.permisLogic.CheckDeleteRole(ctx,
-		cast.ToUint64(req.GetAppBizId()), util.ConvertSliceStringToUint64(req.GetRoleBizIds()),
+	md := contextx.Metadata(ctx)
+	md.WithAppID(app.PrimaryId)
+	md.WithAppName(app.Name)
+	logx.I(ctx, "CheckDeleteRole req:%v", req)
+	exists, err := s.userLogic.VerifyDeleteRole(ctx,
+		cast.ToUint64(req.GetAppBizId()), convx.SliceStringToUint64(req.GetRoleBizIds()),
 	)
 	if err != nil {
-		log.ErrorContextf(ctx, "CheckDeleteRole err:%v", err)
+		logx.E(ctx, "CheckDeleteRole err:%v", err)
 		return nil, errs.ErrGetRoleListFail
 	}
 	existId2 := make(map[uint64]struct{}, len(exists))
@@ -220,26 +239,24 @@ func (s *Service) CheckDeleteRole(ctx context.Context, req *pb.CheckDeleteRoleRe
 		existId2[v.BusinessID] = struct{}{}
 	}
 
-	_, all, err := s.permisLogic.ListKnowledgeRoles(ctx, &dao.KnowledgeRoleReq{
-		KnowledgeBase: dao.KnowledgeBase{
-			CorpBizID: pkg.CorpBizID(ctx),
-			AppBizID:  cast.ToUint64(req.GetAppBizId()),
-		},
-		BizIDs: util.ConvertSliceStringToUint64(req.GetRoleBizIds()),
-	})
+	_, all, err := s.userLogic.DescribeKnowledgeRoleList(ctx,
+		contextx.Metadata(ctx).CorpBizID(), cast.ToUint64(req.GetAppBizId()),
+		&entity.KnowledgeRoleFilter{
+			BizIDs: convx.SliceStringToUint64(req.GetRoleBizIds()),
+		})
 	if err != nil {
-		log.ErrorContextf(ctx, "ListKnowledgeRoles err:%v", err)
+		logx.E(ctx, "CheckDeleteRole|DescribeKnowledgeRoleList err:%v", err)
 		return nil, errs.ErrGetRoleListFail
 	}
 	roleId2Name := make(map[uint64]string, len(all))
 	preset := uint64(0)
 	for _, v := range all {
 		roleId2Name[v.BusinessID] = v.Name
-		if v.Type == model.KnowledgeRoleTypePreset {
+		if v.Type == entity.KnowledgeRoleTypePreset {
 			preset = uint64(v.BusinessID)
 		}
 	}
-	log.InfoContextf(ctx, "req:%v exist:%v roleId2Name:%+v", req.GetRoleBizIds(), exists, roleId2Name)
+	logx.I(ctx, "req:%v exist:%v roleId2Name:%+v", req.GetRoleBizIds(), exists, roleId2Name)
 
 	res := &pb.CheckDeleteRoleRsp{
 		CanDeleteRole:    make([]*pb.RoleBaseInfo, 0, len(req.GetRoleBizIds())),
@@ -264,28 +281,30 @@ func (s *Service) CheckDeleteRole(ctx context.Context, req *pb.CheckDeleteRoleRe
 			})
 		}
 	}
-	log.InfoContextf(ctx, "CheckDeleteRoleRsp:%+v", res)
+	logx.I(ctx, "CheckDeleteRoleRsp:%+v", res)
 	return res, nil
 }
 
 // DeleteRole 删除角色
 func (s *Service) DeleteKnowledgeRole(ctx context.Context, req *pb.DeleteRoleReq) (*pb.DeleteRoleRsp, error) {
-	app, err := s.dao.GetAppByAppBizID(ctx, cast.ToUint64(req.GetAppBizId()))
+	app, err := s.rpc.AppAdmin.DescribeAppById(ctx, cast.ToUint64(req.GetAppBizId()))
+	// app, err := s.dao.GetAppByAppBizID(ctx, cast.ToUint64(req.GetAppBizId()))
 	if err != nil || app == nil {
-		log.ErrorContextf(ctx, "GetAppByAppBizID err:%v", err)
+		logx.E(ctx, "GetAppByAppBizID err:%v", err)
 		return nil, errs.ErrGetAppFail
 	}
-	ctx = pkg.WithAppID(ctx, app.ID)
-	ctx = pkg.WithAppName(ctx, app.Name)
-	log.InfoContextf(ctx, "DeleteRole req:%v", req)
+	md := contextx.Metadata(ctx)
+	md.WithAppID(app.PrimaryId)
+	md.WithAppName(app.Name)
+	logx.I(ctx, "DeleteRole req:%v", req)
 	if len(req.GetRoleBizIds()) == 0 {
 		return nil, errs.ErrDeleteRoleFail
 	}
-	exists, err := s.permisLogic.CheckDeleteRole(ctx,
-		cast.ToUint64(req.GetAppBizId()), util.ConvertSliceStringToUint64(req.GetRoleBizIds()),
+	exists, err := s.userLogic.VerifyDeleteRole(ctx,
+		cast.ToUint64(req.GetAppBizId()), convx.SliceStringToUint64(req.GetRoleBizIds()),
 	)
 	if err != nil {
-		log.ErrorContextf(ctx, "CheckDeleteRole err:%v", err)
+		logx.E(ctx, "CheckDeleteRole err:%v", err)
 		return nil, errs.ErrGetRoleListFail
 	}
 
@@ -300,44 +319,143 @@ func (s *Service) DeleteKnowledgeRole(ctx context.Context, req *pb.DeleteRoleReq
 			canDelete = append(canDelete, v)
 		}
 	}
-	log.InfoContextf(ctx, "req:%v exist:%v canDelete:%+v", req.GetRoleBizIds(), exists, canDelete)
+	logx.I(ctx, "req:%v exist:%v canDelete:%+v", req.GetRoleBizIds(), exists, canDelete)
 	if len(canDelete) == 0 {
 		return nil, errs.ErrDeleteRoleFail
 	}
-	err = s.permisLogic.DeleteKnowledgeRole(ctx, cast.ToUint64(req.GetAppBizId()), canDelete)
+	err = s.userLogic.DeleteKnowledgeRole(ctx, cast.ToUint64(req.GetAppBizId()), canDelete)
 	if err != nil {
-		log.ErrorContextf(ctx, "DeleteKnowledgeRole err:%v", err)
+		logx.E(ctx, "DeleteKnowledgeRole err:%v", err)
 		return nil, errs.ErrDeleteRoleFail
 	}
-	log.InfoContextf(ctx, "DeleteRoleRsp:%+v", canDelete)
+	logx.I(ctx, "DeleteRoleRsp:%+v", canDelete)
 	return &pb.DeleteRoleRsp{
 		DeleteRoleBizIds: canDelete,
 	}, nil
 }
 
+func knowledgeChoosePB2DO(pbChoose *pb.KnowChoose) *entity.KnowledgeChoose {
+	choose := &entity.KnowledgeChoose{
+		KnowledgeBizId:    pbChoose.KnowledgeBizId,
+		KnowledgeName:     pbChoose.KnowledgeName,
+		Type:              pbChoose.Type,
+		SearchType:        pbChoose.SearchType,
+		DocBizIds:         pbChoose.DocBizIds,
+		DocCateBizIds:     pbChoose.DocCateBizIds,
+		QuesAnsBizIds:     pbChoose.QuesAnsBizIds,
+		QuesAnsCateBizIds: pbChoose.QuesAnsCateBizIds,
+		DbBizIds:          pbChoose.DbBizIds,
+		Condition:         pbChoose.Condition,
+	}
+
+	labels := make([]*entity.ChooseLabel, 0, len(pbChoose.Labels))
+	for _, label := range pbChoose.Labels {
+		chooseLabel := &entity.ChooseLabel{
+			AttrBizId: label.AttrBizId,
+			AttrName:  label.AttrName,
+		}
+		chooseLabelLabels := make([]*entity.ChooseLabelLabel, 0, len(label.Labels))
+		for _, labelLabel := range label.Labels {
+			chooseLabelLabel := &entity.ChooseLabelLabel{
+				LabelBizId: labelLabel.LabelBizId,
+				LabelName:  labelLabel.LabelName,
+			}
+			chooseLabelLabels = append(chooseLabelLabels, chooseLabelLabel)
+		}
+		chooseLabel.Labels = chooseLabelLabels
+		labels = append(labels, chooseLabel)
+	}
+	choose.Labels = labels
+	return choose
+}
+
+func knowledgeChoosesPB2DO(pbChooses []*pb.KnowChoose) []*entity.KnowledgeChoose {
+	return slicex.Map(pbChooses, func(pbChoose *pb.KnowChoose) *entity.KnowledgeChoose {
+		return knowledgeChoosePB2DO(pbChoose)
+	})
+}
+
+func rolesInfoDO2PB(roles []*entity.KnowledgeRole, roleBizID2Chooses map[uint64][]*entity.KnowledgeChoose) []*pb.RoleInfo {
+	res := make([]*pb.RoleInfo, 0, len(roles))
+	for _, role := range roles {
+		roleInfo := &pb.RoleInfo{
+			AppBizId:    role.AppBizID,
+			RoleBizId:   role.BusinessID,
+			Name:        role.Name,
+			Type:        int32(role.Type),
+			Description: role.Description,
+			SearchType:  uint32(role.SearchType),
+			IsDeleted:   convx.BoolToInt[uint32](role.IsDeleted),
+			CreateTime:  role.CreateTime.Unix(),
+			UpdateTime:  role.UpdateTime.Unix(),
+		}
+		if chooses, ok := roleBizID2Chooses[role.BusinessID]; ok {
+			pbChooses := make([]*pb.KnowChoose, 0, len(chooses))
+			for _, choose := range chooses {
+				pbChoose := &pb.KnowChoose{
+					KnowledgeBizId:    choose.KnowledgeBizId,
+					KnowledgeName:     choose.KnowledgeName,
+					Type:              choose.Type,
+					SearchType:        choose.SearchType,
+					DocBizIds:         choose.DocBizIds,
+					DocCateBizIds:     choose.DocCateBizIds,
+					QuesAnsBizIds:     choose.QuesAnsBizIds,
+					QuesAnsCateBizIds: choose.QuesAnsCateBizIds,
+					DbBizIds:          choose.DbBizIds,
+					Condition:         choose.Condition,
+				}
+				pbLabels := make([]*pb.ChooseLabel, 0, len(choose.Labels))
+				for _, label := range choose.Labels {
+					pbChooseLabel := &pb.ChooseLabel{
+						AttrBizId: label.AttrBizId,
+						AttrName:  label.AttrName,
+					}
+					pbChooseLabelLabels := make([]*pb.ChooseLabel_Label, 0, len(label.Labels))
+					for _, labelLabel := range label.Labels {
+						pbChooseLabelLabel := &pb.ChooseLabel_Label{
+							LabelBizId: labelLabel.LabelBizId,
+							LabelName:  labelLabel.LabelName,
+						}
+						pbChooseLabelLabels = append(pbChooseLabelLabels, pbChooseLabelLabel)
+					}
+					pbChooseLabel.Labels = pbChooseLabelLabels
+					pbLabels = append(pbLabels, pbChooseLabel)
+				}
+				pbChoose.Labels = pbLabels
+				pbChooses = append(pbChooses, pbChoose)
+			}
+			roleInfo.KnowChoose = pbChooses
+		}
+		res = append(res, roleInfo)
+	}
+	return res
+}
+
 // DetailRole 角色详情
 func (s *Service) DescribeKnowledgeRole(ctx context.Context, req *pb.DescribeKnowledgeRoleReq) (*pb.DescribeKnowledgeRoleRsp, error) {
-	log.InfoContextf(ctx, "DetailRole req:%v", req)
-	app, err := s.dao.GetAppByAppBizID(ctx, cast.ToUint64(req.GetAppBizId()))
+	logx.I(ctx, "DetailRole req:%v", req)
+	app, err := s.rpc.AppAdmin.DescribeAppById(ctx, cast.ToUint64(req.GetAppBizId()))
+	// app, err := s.dao.GetAppByAppBizID(ctx, cast.ToUint64(req.GetAppBizId()))
 	if err != nil || app == nil {
-		log.ErrorContextf(ctx, "GetAppByAppBizID err:%v", err)
+		logx.E(ctx, "GetAppByAppBizID err:%v", err)
 		return nil, errs.ErrGetRoleListFail
 	}
 	if req.GetRoleBizId() == "" || req.GetRoleBizId() == "0" {
 		return nil, errs.ErrGetRoleListFail
 	}
-	ctx = pkg.WithAppID(ctx, app.ID)
-	ctx = pkg.WithAppName(ctx, app.Name)
-	roles, err := s.permisLogic.DetailRole(ctx, cast.ToUint64(req.GetAppBizId()), []uint64{cast.ToUint64(req.GetRoleBizId())})
+	md := contextx.Metadata(ctx)
+	md.WithAppID(app.PrimaryId)
+	md.WithAppName(app.Name)
+	roles, roleBizID2Choose, err := s.userLogic.DescribeDetailKnowledgeRole(ctx, cast.ToUint64(req.GetAppBizId()), []uint64{cast.ToUint64(req.GetRoleBizId())})
 	if err != nil {
-		log.ErrorContextf(ctx, "DetailRole err:%v", err)
+		logx.E(ctx, "DetailRole err:%v", err)
 		return nil, errs.ErrGetRoleListFail
 	}
 	if len(roles) == 0 {
 		return nil, errs.ErrGetRoleListFail
 	}
-	role := roles[0].RoleInfo
-	log.InfoContextf(ctx, "DetailRoleRsp:%+v", role)
+	role := rolesInfoDO2PB(roles, roleBizID2Choose)[0]
+	logx.I(ctx, "DetailRoleRsp:%+v", role)
 	return &pb.DescribeKnowledgeRoleRsp{
 		RoleInfo: role,
 	}, nil
@@ -345,38 +463,38 @@ func (s *Service) DescribeKnowledgeRole(ctx context.Context, req *pb.DescribeKno
 
 // ListRole 查询角色列表
 func (s *Service) ListKnowledgeRole(ctx context.Context, req *pb.ListRoleReq) (*pb.ListRoleRsp, error) {
-	log.InfoContextf(ctx, "ListRole req:%v", req)
-	app, err := s.dao.GetAppByAppBizID(ctx, cast.ToUint64(req.GetAppBizId()))
+	logx.I(ctx, "ListRole req:%v", req)
+	app, err := s.rpc.AppAdmin.DescribeAppById(ctx, cast.ToUint64(req.GetAppBizId()))
+	// app, err := s.dao.GetAppByAppBizID(ctx, cast.ToUint64(req.GetAppBizId()))
 	if err != nil || app == nil {
-		log.ErrorContextf(ctx, "GetAppByAppBizID err:%v", err)
+		logx.E(ctx, "GetAppByAppBizID err:%v", err)
 		return nil, errs.ErrGetAppFail
 	}
 	appBizId := cast.ToUint64(req.GetAppBizId())
-	ctx = pkg.WithAppID(ctx, app.ID)
-	ctx = pkg.WithAppName(ctx, app.Name)
+	md := contextx.Metadata(ctx)
+	md.WithAppID(app.PrimaryId)
+	md.WithAppName(app.Name)
 
 	// 检测是否有默认角色
-	_, _, err = s.permisLogic.CheckPresetRole(ctx, appBizId)
+	_, _, err = s.userLogic.VerifyPresetRole(ctx, appBizId)
 	if err != nil {
-		log.ErrorContextf(ctx, "checkPresetRole err:%v", err)
+		logx.E(ctx, "checkPresetRole err:%v", err)
 		return nil, errs.ErrGetRoleListFail
 	}
 
 	limit := req.GetPageSize()
 	offset := (req.GetPageNumber() - 1) * req.GetPageSize()
-
-	total, roles, err := s.permisLogic.ListKnowledgeRoles(ctx, &dao.KnowledgeRoleReq{
-		KnowledgeBase: dao.KnowledgeBase{
-			CorpBizID: pkg.CorpBizID(ctx),
-			AppBizID:  appBizId,
-			Limit:     int(limit),
-			Offset:    int(offset),
-		},
-		SearchWord: req.GetName(),
-		BizIDs:     util.ConvertSliceStringToUint64(req.GetRoleBizIds()),
-	})
+	total, roles, err := s.userLogic.DescribeKnowledgeRoleList(ctx,
+		contextx.Metadata(ctx).CorpBizID(), appBizId,
+		&entity.KnowledgeRoleFilter{
+			Limit:      int(limit),
+			Offset:     int(offset),
+			SearchWord: req.GetName(),
+			BizIDs:     convx.SliceStringToUint64(req.GetRoleBizIds()),
+			NeedCount:  true,
+		})
 	if err != nil {
-		log.ErrorContextf(ctx, "ListKnowledgeRoles err:%v", err)
+		logx.E(ctx, "DescribeKnowledgeRoleList err:%v", err)
 		return nil, errs.ErrGetRoleListFail
 	}
 	roleBizIds := make([]uint64, 0, len(roles))
@@ -384,20 +502,20 @@ func (s *Service) ListKnowledgeRole(ctx context.Context, req *pb.ListRoleReq) (*
 		roleBizIds = append(roleBizIds, v.BusinessID)
 	}
 	res := make([]*pb.ListRoleInfo, 0, req.GetPageSize())
-	log.InfoContextf(ctx, "roleBizIds:%+v", roleBizIds)
+	logx.I(ctx, "roleBizIds:%+v", roleBizIds)
 	if len(roleBizIds) == 0 {
 		return &pb.ListRoleRsp{
 			RoleList: res,
 			Total:    uint64(total),
 		}, nil
 	}
-	roleInfos, err := s.permisLogic.DetailRole(ctx, cast.ToUint64(req.GetAppBizId()), roleBizIds)
+	roles, roleBizID2Choose, err := s.userLogic.DescribeDetailKnowledgeRole(ctx, cast.ToUint64(req.GetAppBizId()), roleBizIds)
 	if err != nil {
-		log.ErrorContextf(ctx, "DetailRole err:%v", err)
+		logx.E(ctx, "DetailRole err:%v", err)
 		return nil, errs.ErrGetRoleListFail
 	}
-	for _, v := range roleInfos {
-		roleInfo := v.RoleInfo
+	roleInfos := rolesInfoDO2PB(roles, roleBizID2Choose)
+	for _, roleInfo := range roleInfos {
 		temp := &pb.ListRoleInfo{
 			AppBizId:    roleInfo.GetAppBizId(),
 			RoleBizId:   roleInfo.RoleBizId,
@@ -413,8 +531,8 @@ func (s *Service) ListKnowledgeRole(ctx context.Context, req *pb.ListRoleReq) (*
 		for _, v := range roleInfo.KnowChoose {
 			isEmpty := 0
 			switch v.SearchType {
-			case model.KnowSearchAll:
-			case model.KnowSearchSpecial:
+			case entity.KnowSearchAll:
+			case entity.KnowSearchSpecial:
 				if len(v.QuesAnsBizIds) == 0 &&
 					len(v.QuesAnsCateBizIds) == 0 &&
 					len(v.DocBizIds) == 0 &&
@@ -422,7 +540,7 @@ func (s *Service) ListKnowledgeRole(ctx context.Context, req *pb.ListRoleReq) (*
 					len(v.DocCateBizIds) == 0 {
 					isEmpty = 1
 				}
-			case model.KnowSearchLabel:
+			case entity.KnowSearchLabel:
 				if len(v.GetLabels()) == 0 {
 					isEmpty = 1
 				}
@@ -440,37 +558,59 @@ func (s *Service) ListKnowledgeRole(ctx context.Context, req *pb.ListRoleReq) (*
 		temp.KnowChoose = knows
 		res = append(res, temp)
 	}
-	log.InfoContextf(ctx, "ListRoleRsp:%+v", res)
+	logx.I(ctx, "ListRoleRsp:%+v", res)
 	return &pb.ListRoleRsp{
 		RoleList: res,
 		Total:    uint64(total),
 	}, nil
 }
 
-// DescribeRoleSearch 搜寻角色详情
+func roleSearchInfoListDO2PB(roleSearch []*entity.RoleSearchInfo) []*pb.DescribeRoleSearchRsp_SearchInfo {
+	res := make([]*pb.DescribeRoleSearchRsp_SearchInfo, 0, len(roleSearch))
+	for _, v := range roleSearch {
+		res = append(res, &pb.DescribeRoleSearchRsp_SearchInfo{
+			Type:        v.Type,
+			Name:        v.Name,
+			SearchBizId: v.SearchBizId,
+			CateBizId:   v.CateBizId,
+		})
+	}
+	return res
+}
+
+// DescribeRoleSearch 获取角色搜索详情
 func (s *Service) DescribeRoleSearch(ctx context.Context, req *pb.DescribeRoleSearchReq) (*pb.DescribeRoleSearchRsp, error) {
-	app, err := s.dao.GetAppByAppBizID(ctx, cast.ToUint64(req.GetAppBizId()))
+	appid := cast.ToUint64(req.GetAppBizId())
+	app, err := s.rpc.AppAdmin.DescribeAppById(ctx, appid)
+	// app, err := s.dao.GetAppByAppBizID(ctx, cast.ToUint64(req.GetAppBizId()))
 	if err != nil || app == nil {
-		log.ErrorContextf(ctx, "GetAppByAppBizID err:%v", err)
+		logx.E(ctx, "GetAppByAppBizID err:%v", err)
 		return nil, errs.ErrGetAppFail
 	}
 	// 知识库校验
 	if req.GetKnowBizId() == "" || req.GetKnowBizId() == "0" {
 		return nil, errs.ErrGetKnowledgeFailed
 	}
-	ctx = pkg.WithAppID(ctx, app.ID)
-	ctx = pkg.WithAppName(ctx, app.Name)
-	log.InfoContextf(ctx, "DescribeRoleSearch:%+v", req)
+	md := contextx.Metadata(ctx)
+	md.WithAppID(app.PrimaryId)
+	md.WithAppName(app.Name)
+	logx.I(ctx, "DescribeRoleSearch:%+v", req)
 	for _, v := range req.GetRoleSearch() {
-		if v.Type == 0 || v.Type > Permis.SearchTypeDatabase || len(v.GetSearchBizIds()) == 0 {
+		if v.Type == 0 || v.Type > entity.SearchTypeDatabase || len(v.GetSearchBizIds()) == 0 {
 			return nil, errs.ErrParams
 		}
 	}
-	res, err := s.permisLogic.DescribeRoleSearch(ctx, req)
+	type2SearchBizIds := make(map[uint32][]string)
+	for _, search := range req.GetRoleSearch() {
+		type2SearchBizIds[search.GetType()] = search.GetSearchBizIds()
+	}
+	res, err := s.userLogic.DescribeRoleSearch(ctx, appid, cast.ToUint64(req.GetKnowBizId()), type2SearchBizIds)
 	if err != nil {
-		log.ErrorContextf(ctx, "DetailRoleSearch err:%v", err)
+		logx.E(ctx, "DetailRoleSearch err:%v", err)
 		return nil, errs.ErrGetRoleListFail
 	}
-	log.InfoContextf(ctx, "DetailRoleSearchRsp:%+v", res)
-	return res, nil
+	logx.I(ctx, "DetailRoleSearchRsp:%+v", res)
+	return &pb.DescribeRoleSearchRsp{
+		RoleSearch: roleSearchInfoListDO2PB(res),
+	}, nil
 }

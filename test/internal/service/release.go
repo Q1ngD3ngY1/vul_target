@@ -4,24 +4,26 @@ import (
 	"context"
 	"time"
 
-	"git.code.oa.com/trpc-go/trpc-go/log"
+	"git.woa.com/adp/common/x/contextx"
+	"git.woa.com/adp/common/x/gox/convx"
+	"git.woa.com/adp/common/x/gox/slicex"
+	"git.woa.com/adp/common/x/logx"
 	"git.woa.com/adp/common/x/trpcx/plugins/i18n"
-	"git.woa.com/baicaoyuan/moss/types/slicex"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/util"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg/errs"
-	pb "git.woa.com/dialogue-platform/lke_proto/pb-protocol/bot_knowledge_config_server"
+	"git.woa.com/adp/kb/kb-config/internal/util"
+	"git.woa.com/adp/kb/kb-config/pkg/errs"
+	pb "git.woa.com/adp/pb-go/kb/kb_config"
 )
 
 // CheckUnconfirmedQa 是否存在未确认问答
 func (s *Service) CheckUnconfirmedQa(ctx context.Context, req *pb.CheckUnconfirmedQaReq) (
 	*pb.CheckUnconfirmedQaRsp, error) {
 	rsp := new(pb.CheckUnconfirmedQaRsp)
-	app, err := s.getAppByAppBizID(ctx, req.GetBotBizId())
+	botBizID := convx.Uint64ToString(req.GetBotBizId())
+	app, err := s.DescribeAppAndCheckCorp(ctx, botBizID)
 	if err != nil {
 		return rsp, errs.ErrRobotNotFound
 	}
-	rsp.Exist, err = s.dao.CheckUnconfirmedQa(ctx, app.ID)
+	rsp.Exist, err = s.qaLogic.CheckUnconfirmedQa(ctx, app.PrimaryId)
 	if err != nil {
 		return rsp, err
 	}
@@ -31,7 +33,7 @@ func (s *Service) CheckUnconfirmedQa(ctx context.Context, req *pb.CheckUnconfirm
 // ListReleaseDocPreview 获取发布文档预览
 func (s *Service) ListReleaseDocPreview(ctx context.Context, req *pb.ListReleaseDocPreviewReq) (
 	*pb.ListReleaseDocPreviewRsp, error) {
-	log.InfoContextf(ctx, "ListReleaseDocPreview Req:%+v", req)
+	logx.I(ctx, "ListReleaseDocPreview Req:%+v", req)
 	if req.GetReleaseBizId() == "" {
 		// 版本ID=0，查询t_doc待发布文档
 		return s.getReleaseDocWithZeroVersion(ctx, req)
@@ -40,27 +42,22 @@ func (s *Service) ListReleaseDocPreview(ctx context.Context, req *pb.ListRelease
 	if err != nil {
 		return nil, err
 	}
-	release, err := s.dao.GetReleaseByBizID(ctx, releaseBizID)
+	release, err := s.releaseLogic.GetReleaseByBizID(ctx, releaseBizID)
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
 	if release == nil {
 		return nil, errs.ErrReleaseNotFound
 	}
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
-	if err != nil {
-		return nil, err
-	}
-	app, err := s.getAppByAppBizID(ctx, botBizID)
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
 	if err != nil {
 		return nil, errs.ErrRobotNotFound
 	}
-	total, err := s.dao.GetModifyDocCount(ctx, app.ID, release.ID, req.GetQuery(), req.GetActions(), nil)
+	total, err := s.releaseLogic.GetModifyDocCount(ctx, app.PrimaryId, release.ID, req.GetQuery(), req.GetActions(), nil)
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
-	docs, err := s.dao.GetModifyDocList(ctx, app.ID, release.ID, req.GetQuery(), req.GetActions(),
-		req.GetPageNumber(), req.GetPageSize())
+	docs, err := s.releaseLogic.GetModifyDocList(ctx, app.PrimaryId, release.ID, req.GetQuery(), req.GetActions(), req.GetPageNumber(), req.GetPageSize())
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
@@ -84,16 +81,11 @@ func (s *Service) ListReleaseDocPreview(ctx context.Context, req *pb.ListRelease
 
 func (s *Service) getReleaseDocWithZeroVersion(ctx context.Context, req *pb.ListReleaseDocPreviewReq) (
 	*pb.ListReleaseDocPreviewRsp, error) {
-	corpID := pkg.CorpID(ctx)
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
 	if err != nil {
 		return nil, err
 	}
-	app, err := s.getAppByAppBizID(ctx, botBizID)
-	if err != nil {
-		return nil, errs.ErrRobotNotFound
-	}
-	isInit, err := s.checkReleaseIsInit(ctx, corpID, app.ID)
+	isInit, err := s.checkReleaseIsInit(ctx, app.CorpPrimaryId, app.PrimaryId)
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
@@ -107,12 +99,11 @@ func (s *Service) getReleaseDocWithZeroVersion(ctx context.Context, req *pb.List
 	if req.GetEndTime() != 0 {
 		endTime = time.Unix(req.GetEndTime(), 0)
 	}
-	total, err := s.dao.GetWaitReleaseDocCount(ctx, corpID, app.ID, req.GetQuery(), startTime, endTime,
-		req.GetActions())
+	total, err := s.docLogic.GetWaitReleaseDocCount(ctx, app.CorpPrimaryId, app.PrimaryId, req.GetQuery(), startTime, endTime, req.GetActions())
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
-	docs, err := s.dao.GetWaitReleaseDoc(ctx, corpID, app.ID, req.GetQuery(), startTime, endTime, req.GetActions(),
+	docs, err := s.docLogic.GetWaitReleaseDoc(ctx, app.CorpPrimaryId, app.PrimaryId, req.GetQuery(), startTime, endTime, req.GetActions(),
 		req.GetPageNumber(), req.GetPageSize())
 	if err != nil {
 		return nil, errs.ErrSystem
@@ -137,31 +128,28 @@ func (s *Service) getReleaseDocWithZeroVersion(ctx context.Context, req *pb.List
 // ListReleaseQAPreview 获取发布QA预览
 func (s *Service) ListReleaseQAPreview(ctx context.Context, req *pb.ListReleaseQAPreviewReq) (
 	*pb.ListReleaseQAPreviewRsp, error) {
-	log.InfoContextf(ctx, "ListReleaseQAPreview Req:%+v", req)
+	logx.I(ctx, "ListReleaseQAPreview Req:%+v", req)
 	if req.GetReleaseBizId() == "" {
+		logx.I(ctx, "ListReleaseQAPreview Req:%+v", req)
 		return s.getReleaseQAWithZeroVersion(ctx, req)
 	}
 	releaseID, err := util.CheckReqParamsIsUint64(ctx, req.GetReleaseBizId())
 	if err != nil {
 		return nil, err
 	}
-	release, err := s.dao.GetReleaseByBizID(ctx, releaseID)
+	release, err := s.releaseLogic.GetReleaseByBizID(ctx, releaseID)
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
 	if release == nil {
 		return nil, errs.ErrReleaseNotFound
 	}
-	botBizID, err := util.CheckReqParamsIsUint64(ctx, req.GetBotBizId())
-	if err != nil {
-		return nil, err
-	}
-	app, err := s.getAppByAppBizID(ctx, botBizID)
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
 	if err != nil {
 		return nil, errs.ErrRobotNotFound
 	}
 	emptyAction := make([]uint32, 0)
-	total, err := s.dao.GetModifyQACount(ctx, app.ID, release.ID, req.GetQuery(), emptyAction, req.GetReleaseStatus())
+	total, err := s.releaseLogic.GetModifyQACount(ctx, app.PrimaryId, release.ID, req.GetQuery(), emptyAction, req.GetReleaseStatus())
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
@@ -169,7 +157,8 @@ func (s *Service) ListReleaseQAPreview(ctx context.Context, req *pb.ListReleaseQ
 	if release.IsPublishFailed() {
 		orderBy = " ORDER BY release_status DESC,id ASC"
 	}
-	list, err := s.dao.GetModifyQAList(ctx, app.ID, release.ID, req.GetQuery(), emptyAction, req.GetPageNumber(),
+
+	list, err := s.releaseLogic.GetModifyQAList(ctx, app.PrimaryId, release.ID, req.GetQuery(), emptyAction, req.GetPageNumber(),
 		req.GetPageSize(), orderBy, req.GetReleaseStatus())
 	if err != nil {
 		return nil, errs.ErrSystem
@@ -183,11 +172,11 @@ func (s *Service) ListReleaseQAPreview(ctx context.Context, req *pb.ListReleaseQ
 		}
 		docIDs = append(docIDs, qa.DocID)
 	}
-	docs, err := s.dao.GetDocByIDs(ctx, slicex.Unique(docIDs), app.ID)
+	docs, err := s.docLogic.GetDocByIDs(ctx, slicex.Unique(docIDs), app.PrimaryId)
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
-	qaList, err := s.dao.GetQADetails(ctx, pkg.CorpID(ctx), app.ID, qaIDs)
+	qaList, err := s.qaLogic.GetQADetails(ctx, contextx.Metadata(ctx).CorpID(), app.PrimaryId, qaIDs)
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
@@ -228,21 +217,20 @@ func (s *Service) ListReleaseQAPreview(ctx context.Context, req *pb.ListReleaseQ
 
 func (s *Service) getReleaseQAWithZeroVersion(ctx context.Context, req *pb.ListReleaseQAPreviewReq) (
 	*pb.ListReleaseQAPreviewRsp, error) {
-	corpID := pkg.CorpID(ctx)
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
-	if err != nil {
-		return nil, err
-	}
-	app, err := s.getAppByAppBizID(ctx, botBizID)
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
 	if err != nil {
 		return nil, errs.ErrRobotNotFound
 	}
-	isInit, err := s.checkReleaseIsInit(ctx, corpID, app.ID)
+	isInit, err := s.checkReleaseIsInit(ctx, app.CorpPrimaryId, app.PrimaryId)
 	if err != nil {
+		logx.E(ctx, "[getReleaseQAWithZeroVersion]checkReleaseIsInit failed, error:%v", err)
 		return nil, errs.ErrSystem
 	}
 	if isInit {
-		return &pb.ListReleaseQAPreviewRsp{}, nil
+		return &pb.ListReleaseQAPreviewRsp{
+			Total: 0,
+			List:  make([]*pb.ListReleaseQAPreviewRsp_QA, 0),
+		}, nil
 	}
 	var startTime, endTime time.Time
 	if req.GetStartTime() != 0 {
@@ -251,17 +239,20 @@ func (s *Service) getReleaseQAWithZeroVersion(ctx context.Context, req *pb.ListR
 	if req.GetEndTime() != 0 {
 		endTime = time.Unix(req.GetEndTime(), 0)
 	}
-	total, err := s.dao.GetReleaseQACount(ctx, corpID, app.ID, req.GetQuery(), startTime, endTime, req.GetActions())
+	total, err := s.qaLogic.GetReleaseQACount(ctx, app.CorpPrimaryId, app.PrimaryId, req.GetQuery(), startTime, endTime, req.GetActions())
 	if err != nil {
+		logx.E(ctx, "[getReleaseQAWithZeroVersion]GetReleaseQACount failed, error:%v", err)
 		return nil, errs.ErrSystem
 	}
-	list, err := s.dao.GetReleaseQAList(ctx, corpID, app.ID, req.GetQuery(), startTime, endTime, req.GetActions(),
+	list, err := s.qaLogic.GetReleaseQAList(ctx, app.CorpPrimaryId, app.PrimaryId, req.GetQuery(), startTime, endTime, req.GetActions(),
 		req.GetPageNumber(), req.GetPageSize())
 	if err != nil {
+		logx.E(ctx, "[getReleaseQAWithZeroVersion]GetReleaseQAList failed, error:%v", err)
 		return nil, errs.ErrSystem
 	}
-	docs, err := s.getSourceDoc(ctx, list, app.ID)
+	docs, err := s.getSourceDoc(ctx, list, app.PrimaryId)
 	if err != nil {
+		logx.E(ctx, "[getReleaseQAWithZeroVersion]getSourceDoc failed, error:%v", err)
 		return nil, errs.ErrSystem
 	}
 	rspList := make([]*pb.ListReleaseQAPreviewRsp_QA, 0)
@@ -292,41 +283,95 @@ func (s *Service) getReleaseQAWithZeroVersion(ctx context.Context, req *pb.ListR
 	}, nil
 }
 
-// ListRejectedQuestionPreview 发布拒答问题预览
+func (s *Service) getReleaseLabelWithZeroVersion(ctx context.Context, req *pb.ListReleaseLabelPreviewReq) (
+	*pb.ListReleaseLabelPreviewRsp, error) {
+	rsp := new(pb.ListReleaseLabelPreviewRsp)
+	corpID := contextx.Metadata(ctx).CorpID()
+	app, err := s.rpc.AppAdmin.DescribeAppById(ctx, req.GetAppBizId())
+	if err != nil {
+		return nil, errs.ErrAppNotFound
+	}
+	isInit, err := s.checkReleaseIsInit(ctx, corpID, app.PrimaryId)
+	if err != nil {
+		return nil, errs.ErrSystem
+	}
+	if isInit {
+		return &pb.ListReleaseLabelPreviewRsp{
+			Total: 0,
+			List:  make([]*pb.ReleaseLabel, 0),
+		}, nil
+	}
+	var startTime, endTime time.Time
+	if req.GetStartTime() != 0 {
+		startTime = time.Unix(req.GetStartTime(), 0)
+	}
+	if req.GetEndTime() != 0 {
+		endTime = time.Unix(req.GetEndTime(), 0)
+	}
+	total, err := s.labelLogic.GetWaitReleaseAttributeCount(ctx, app.PrimaryId, req.GetQuery(), req.GetActions(),
+		startTime, endTime)
+	if err != nil {
+		return nil, errs.ErrSystem
+	}
+	rsp.Total = total
+	rsp.List = make([]*pb.ReleaseLabel, 0)
+	if total == 0 {
+		return rsp, nil
+	}
+	labels, err := s.labelLogic.GetWaitReleaseAttributeList(ctx, app.PrimaryId, req.GetQuery(), req.GetActions(),
+		req.GetPageNumber(), req.GetPageSize(), startTime, endTime)
+	if err != nil {
+		return nil, errs.ErrSystem
+	}
+	for _, v := range labels {
+		rsp.List = append(rsp.List, &pb.ReleaseLabel{
+			LabelName:  v.Name,
+			UpdateTime: v.UpdateTime.Unix(),
+			Action:     v.NextAction,
+			ActionDesc: i18n.Translate(ctx, v.ActionDesc()),
+			Message:    "",
+		})
+	}
+	return rsp, nil
+}
+
+func (s *Service) ListReleaseLabelPreview(ctx context.Context, req *pb.ListReleaseLabelPreviewReq) (
+	*pb.ListReleaseLabelPreviewRsp, error) {
+	rsp := new(pb.ListReleaseLabelPreviewRsp)
+	return rsp, nil
+}
+
+// ListRejectedQuestionPreview 获取发布拒答问题预览
 func (s *Service) ListRejectedQuestionPreview(ctx context.Context, req *pb.ListRejectedQuestionPreviewReq) (
 	*pb.ListRejectedQuestionPreviewRsp, error) {
-	log.InfoContextf(ctx, "ListRejectedQuestionPreview Req:%+v", req)
-	if req.GetReleaseBizId() == "" {
+	logx.I(ctx, "ListRejectedQuestionPreview Req:%+v", req)
+	if req.GetReleaseBizId() == "" || req.GetReleaseBizId() == "0" {
+		logx.I(ctx, "ListRejectedQuestionPreview Req with zeroVersion")
 		return s.getReleaseRejectedQuestionWithZeroVersion(ctx, req)
 	}
 	releaseID, err := util.CheckReqParamsIsUint64(ctx, req.GetReleaseBizId())
 	if err != nil {
 		return nil, err
 	}
-	release, err := s.dao.GetReleaseByBizID(ctx, releaseID)
+	release, err := s.releaseLogic.GetReleaseByBizID(ctx, releaseID)
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
 	if release == nil {
 		return nil, errs.ErrReleaseNotFound
 	}
-	corpID := pkg.CorpID(ctx)
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
 	if err != nil {
-		return nil, err
-	}
-	app, err := s.getAppByAppBizID(ctx, botBizID)
-	if err != nil || app.CorpID != corpID {
 		return nil, errs.ErrRobotNotFound
 	}
 	query := req.GetQuery()
 	page := req.GetPageNumber()
 	pageSize := req.GetPageSize()
-	total, err := s.dao.GetModifyRejectedQuestionCount(ctx, corpID, app.ID, release.ID, query, nil)
+	total, err := s.releaseLogic.GetModifyRejectedQuestionCount(ctx, app.CorpPrimaryId, app.PrimaryId, release.ID, query, nil)
 	if err != nil {
 		return nil, err
 	}
-	list, err := s.dao.GetModifyRejectedQuestionList(ctx, corpID, app.ID, release.ID, query, page, pageSize)
+	list, err := s.releaseLogic.GetModifyRejectedQuestionList(ctx, app.CorpPrimaryId, app.PrimaryId, release.ID, query, page, pageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -349,16 +394,11 @@ func (s *Service) ListRejectedQuestionPreview(ctx context.Context, req *pb.ListR
 func (s *Service) getReleaseRejectedQuestionWithZeroVersion(ctx context.Context,
 	req *pb.ListRejectedQuestionPreviewReq) (
 	*pb.ListRejectedQuestionPreviewRsp, error) {
-	corpID := pkg.CorpID(ctx)
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
 	if err != nil {
-		return nil, err
-	}
-	app, err := s.getAppByAppBizID(ctx, botBizID)
-	if err != nil || app.CorpID != corpID {
 		return nil, errs.ErrRobotNotFound
 	}
-	isInit, err := s.checkReleaseIsInit(ctx, corpID, app.ID)
+	isInit, err := s.checkReleaseIsInit(ctx, app.CorpPrimaryId, app.PrimaryId)
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
@@ -378,14 +418,12 @@ func (s *Service) getReleaseRejectedQuestionWithZeroVersion(ctx context.Context,
 		endTime = time.Unix(req.GetEndTime(), 0)
 	}
 
-	total, err := s.dao.GetReleaseRejectedQuestionCount(ctx, corpID, app.ID, query, startTime, endTime,
-		req.GetActions())
+	total, err := s.releaseLogic.GetReleaseRejectedQuestionCount(ctx, app.CorpPrimaryId, app.PrimaryId, query, startTime, endTime, req.GetActions())
 	if err != nil {
 		return nil, err
 	}
 
-	list, err := s.dao.GetReleaseRejectedQuestionList(ctx, corpID, app.ID, page, pageSize, query, startTime, endTime,
-		req.GetActions())
+	list, err := s.releaseLogic.GetReleaseRejectedQuestionList(ctx, app.CorpPrimaryId, app.PrimaryId, page, pageSize, query, startTime, endTime, req.GetActions())
 	if err != nil {
 		return nil, err
 	}
@@ -394,7 +432,7 @@ func (s *Service) getReleaseRejectedQuestionWithZeroVersion(ctx context.Context,
 		rspList = append(rspList, &pb.ListRejectedQuestionPreviewRsp_RejectedQuestions{
 			Question:   v.Question,
 			UpdateTime: v.UpdateTime.Unix(),
-			Action:     v.Action,
+			Action:     uint32(v.Action),
 			ActionDesc: i18n.Translate(ctx, v.ActionDesc()),
 		})
 	}
@@ -406,7 +444,7 @@ func (s *Service) getReleaseRejectedQuestionWithZeroVersion(ctx context.Context,
 
 // checkReleaseIsInit 校验发布任务是否在采集中
 func (s *Service) checkReleaseIsInit(ctx context.Context, corpID, robotID uint64) (bool, error) {
-	release, err := s.dao.GetLatestRelease(ctx, corpID, robotID)
+	release, err := s.releaseLogic.GetLatestRelease(ctx, corpID, robotID)
 	if err != nil {
 		return false, err
 	}

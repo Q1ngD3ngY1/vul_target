@@ -1,0 +1,183 @@
+robot_default:
+  # robot_default 中只修改了以下几个 filter，其他配置保持不变
+  filters:
+    search_release:
+      top_n: 15
+      filter:
+        - doc_type: 1
+          confidence: 0.7
+          top_n: 3
+        - doc_type: 4
+          confidence: 0.8
+          top_n: 5
+        - doc_type: 2
+          confidence: 0.2
+          top_n: 5
+        - doc_type: 5
+          confidence: 0
+          top_n: 0
+        - doc_type: 8
+          confidence: 0
+          top_n: 0
+    search_release_question:
+      top_n: 1
+      skip_rechunk: true
+      filter:
+        - doc_type: 1
+          confidence: 0.97
+          top_n: 1
+    search_preview:
+      top_n: 15
+      filter:
+        - doc_type: 1
+          index_id: 2
+          confidence: 0.7
+          top_n: 3
+        - doc_type: 4
+          index_id: 7
+          confidence: 0.8
+          top_n: 5
+        - doc_type: 2
+          index_id: 4
+          confidence: 0.2
+          top_n: 5
+        - doc_type: 5
+          index_id: 0
+          confidence: 0
+          top_n: 0
+        - doc_type: 8
+          index_id: 0
+          confidence: 0
+          top_n: 0
+    search_preview_question:
+      top_n: 1
+      skip_rechunk: true
+      filter:
+        - doc_type: 1
+          index_id: 2
+          confidence: 0.97
+          top_n: 1
+
+tasks:
+  # 以下几个是新增
+  release_knowledge_config:
+    runners: 1
+    retry_wait_time: 30s
+    max_retry: 2
+    timeout: 60m
+    fail_timeout: 3s
+    delay: 0s #启动延迟
+    batch: 1
+    batch_size: 0
+    stopped_resume_time: 720h
+  release_doc:
+    runners: 1
+    retry_wait_time: 10s
+    max_retry: 2
+    timeout: 180m
+    fail_timeout: 3s
+    delay: 0s #启动延迟
+    batch: 1
+    batch_size: 0
+    stopped_resume_time: 720h
+  release_doc_qa:
+    runners: 1
+    retry_wait_time: 1m
+    max_retry: 2
+    timeout: 180m
+    fail_timeout: 3s
+    delay: 0s #启动延迟
+    batch: 1
+    batch_size: 0
+    stopped_resume_time: 720h
+  release_label:
+    runners: 1
+    retry_wait_time: 1m
+    max_retry: 2
+    timeout: 30m
+    fail_timeout: 3s
+    delay: 0s #启动延迟
+    batch: 1
+    batch_size: 0
+    stopped_resume_time: 720h
+  release_rejected_question:
+    runners: 1
+    retry_wait_time: 1m
+    max_retry: 2
+    timeout: 180m
+    fail_timeout: 3s
+    delay: 0s #启动延迟
+    batch: 1
+    batch_size: 0
+    stopped_resume_time: 720h
+
+db_source:
+  # 以下是新增配置
+  db_source_decode_key: LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFb2dJQkFBS0NBUUVBdkhVdFpOL2dJN05QVUlFQmlvMGpRUURGRXlFTndSRFNJbXF3WUhUd0ZyampuNVhlCm9zeDgrdDIxdkNDSEV5WmdlWVNsZlJaZFRacTR4TTNqQmhGZy9iRTZlL296Qkw4aUtiSUlEVUQ4R3hOZ1BZYk8KbWxOZ0hGL0VQZk1OcXgvOWhlZGNnc1ppZ1c3MWJsNnhmQ09NVDc1ZHIrTWpCYU55N3B4OE1PVVJWSE42YjdyUQpHeXlPeGlYZzVDSU9XYXNZdUV1UUNZQUsrM3JRRUlPVHlvVWJXMGk1SVpsTVJQNGVraUZqOWlrWHp1aXVmSGx4CjlQWDR2ZGUyaEh1bFVnTktHTXUzeTExcGRJK0FkSXlVTlBSWWN2bjVRczlxQ005cHY5elN5eHNZTVBIcHBEWU4Kck16TjBYdTdiNThYUmp6ckdaakM2NjBQeVh3VEVqOGZYNHMxc1FJREFRQUJBb0lCQUNWQjh6NEFwcUxZTmNPQQpKYXBiR2MrbGs5Q2kxY0hJRGdzZzFZclVRNHp5YzRuZXlydWJ1cytyMmx4OWY4YlE3UHpKTlNCa05nRDhLREE4ClZmZ2lvbTYxUlk4eUdUa0Vnb0FFd3VPLzU3ZUFucU83VFlna0dKbXpjeXdlSzZNYnVYYnFGUmVEbWdEbHkxN04KR01DbWxIeEZjZWN1ZkFPRzIxZUNGMmxoT0FwZVRVSm1Db2h4RVdvbUF3SzN4dVdKckRCM1o1N1lkaTZ5ckc3MgpLR0w3SitXMFFJOE5PK2cveWV2VUN0V0YyZ3B1ejA2UjgzY3NUZW9mbktWd3NBZDZ5OXFTOXJ5WmxvTjZNYmNsClNxbVZ2MFVYN2V0YzNKMERYTXczOWo3dVVWVisvN2YwVGQ2VTk2RnRwRU1FK2lNajlreDVIcisrTEVEZ0V5WTMKenUwMjlqa0NnWUVBMWNsMFdxa09BMDhWc0hpc1hNWWlzYk0yMWRnQTEzMXAyVThHVXJudzZFa1lwTVB1QUNuVwpzZTcwaDdlS29VcUNXSnU5bXk3dU5jaWVmUDlQa1hSTElWWTE3RTlmNlpIanBaUUVvUXlBaFJWeFl5eW1GK2tDClpPWUN3VWRmY0N5OFBNR0RaM3VRYmtNc0xFaktPc2lnSk9FOFJydnUzQmV3MVBKRHJ4UzhRbDBDZ1lFQTRhdGcKZU5xOCtIemZxTWlWMjZ6Zkl5MHkxbUk0TXQzdFZqeFlhRjhVQ2ZUZmpJVlBBYXFpdzFDMjFJY1VUNUZWcDVUUgpHU3RXRjVNa1oyTnJEdVMvTjEwMzJPaXZUYWlDSHhPUklhUmprVHl3N0Q5TmdrSWFHYXk4L0JhMGJldWt0QnV3CnlSYUVDdkZKQS9ESEVScmpNY3ZSNmpiSFRQNkU3bzFPYmxoMnMyVUNnWUJRb0NVdGU4dzVHejVHeTN2VmtUUE0KYUpZcGw4alpmQWJMV2E0OHpMczZIemNZREh4WnUyMm90VUdyWFdEKzZ5YTFYQ2JwdTQxQzQySkNLZGRNTjl1Tgp1d0dqR1Z4R3JpcDRhNVpEVm4reHNTQ09FbXloWDlMelVudC9nUGRSU3MzQzdBZ3VvcjhabG1PMlg4MUUxaHp2ClM3Sjd5cXlPZkxESDNvWUFKWVhLVVFLQmdDZmlnVDk2OFpFOWlNNHMvWWVBNjBNdFZ1SGJKREdoVmJRN0lDajYKUFBGeGpSMHA1b2ZWMzhTRGZIemRqdkp0TG1WYkFRWGd5ZXVLdnhGaTJlWWMrY3JRTi9HblZteDBUdU10TXladQpCb2NCNGdjdlBRUzdxQjlIajNOQ2xBc2xiY3ZEWlNCMVVVc1owQnpaTG1YUWliMGdWKzU4VmdjK3FNSDh5WkxwCklibWRBb0dBS0JwSEJEcC9MMmhmU0U5RWJMMmlaVkhvbXQwRnRYN3RlZTQ2YkxFSnVxZ3FYUnRqSUNrU1lhTnYKVXR5cmRoVEdPemwzcmE0NXoxeDJzTUVIcFpDVkhlNnoxVkxnZGFoUjc3UFlHUTJFS2ZIUERVbS8vY0svVk1rYQprOFR2dGNpMk5hMGhEMzcyYTQrMG04Y0FDcXJoWDhHSlpWV1lyOG0xZWlnZElnOTl4eGs9Ci0tLS0tRU5EIFJTQSBQUklWQVRFIEtFWS0tLS0t
+  proxy: 11.145.119.124:1080
+  proxy_user: proxyuser
+  proxy_pd: PhZFaEdf1qHy0
+  proxy_effect_time: "2025-11-18 21:00:00"
+  # 不安全的DSN参数列表，用于安全检查
+  unsafe_dsn_params:
+    # MySQL 不安全参数
+    - "allowAllFiles"           # 允许读取服务器上的任意文件，存在严重安全风险
+    - "allowLoadLocalInfile"    # 允许LOAD DATA LOCAL INFILE，可能导致本地文件泄露
+
+# database 是新增配置项
+database:
+  forbidden_database_names:
+    sql_server: ["master", "model", "tempdb", "msdb", "Resource", "Monitor"]
+
+# release_param_config 是新增配置项
+# 知识库发布任务的参数配置
+release_param_config:
+  # 获取发布中的记录的数量
+  get_releasing_record_size: 2500
+  # 发布时批量处理数据的批次数量
+  batch_process_concurrency: 10
+  # 发布时批量写入发布记录的并发数量,待废弃
+  release_record_concurrency: 10
+  # 发布时批量更新发布记录的批次大小
+  release_record_batch_size: 500
+  # 发布时批量写入发布记录的并发数量
+  create_release_concurrency: 10
+  # 发布时批量写入发布记录的批次大小
+  create_release_batch_size: 150
+  # 获取id的批量大小 默认500 即一次获取500个id，然后再批量查询
+  get_ids_chunk_size: 500
+  # 发布时批量同步增加向量数据数量
+  batch_add_nodes_size: 100
+  # 发布时批量同步删除向量数据数量
+  batch_delete_nodes_size: 100
+  # 向量发布回调写库的并发数量
+  notify_batch_size: 3
+  # 向量发布重试次数
+  retry_times: 2
+# qa审核开关，默认不配置
+qa_audit_switch: false
+# 节点批量创建每批次大小
+insert_nodes_chunk: 100
+# 节点批量获取每批次大小
+get_nodes_chunk: 200
+# 获取id的批量大小 默认5w 即一次获取5w个id
+get_ids_chunk_size: 50000
+# 批量删除数据的数量，默认100
+delete_chunk_size: 100
+# 发布任务的参数配置
+publish_param_config:
+  # 发布时批量同步节点数据数量
+  batch_add_nodes_size: 100
+  # embedding调用的并发数
+  embedding_batch_size: 20
+  # 发布时图片embedding调用的并发数
+  image_embedding_batch_size: 10
+  # 批量添加向量的数量
+  batch_add_vector_size: 100
+  # 发布时写入redis kv单key节点数量
+  kv_node_batch_size: 100
+  # 回调admin的并发数量
+  notify_batch_size: 3
+  # 添加向量/ES等失败的调用次数（重试1次）
+  retry_times: 2
+  delete_batch_size: 100

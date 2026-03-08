@@ -2,24 +2,32 @@ package common
 
 import (
 	"context"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg"
-	"go.opentelemetry.io/otel/trace"
+
+	"git.woa.com/adp/common/x/logx"
+	"git.woa.com/adp/kb/kb-config/internal/rpc"
+	"git.woa.com/adp/kb/kb-config/pkg/errs"
 )
 
-// GetOffsetByPage 获取分页的offset和limit, pageNumber从1开始, offset从0开始
-func GetOffsetByPage(pageNumber uint32, pageSize uint32) uint32 {
-	if pageSize == 0 {
-		return 0
+// ConvertErrMsg 转换错误信息
+func ConvertErrMsg(ctx context.Context, rpc *rpc.RPC, sID uint64, corpID uint64, oldErr error) error {
+	if sID == 0 && corpID == 0 {
+		return oldErr
 	}
-	offset := (pageNumber - 1) * pageSize
-	return offset
-}
-
-// GetRequestID 获取requestID
-func GetRequestID(ctx context.Context) string {
-	requestID := pkg.RequestID(ctx)
-	if requestID != "" {
-		return requestID
+	if sID == 0 && corpID != 0 {
+		corp, err := rpc.DescribeCorpByPrimaryId(ctx, corpID)
+		// corp, err := d.GetCorpByID(ctx, corpID)
+		if err != nil {
+			logx.E(ctx, "GetCorpByID corpID:%d err:%+v", corpID, err)
+			return oldErr
+		}
+		sID = corp.GetSid()
 	}
-	return trace.SpanContextFromContext(ctx).TraceID().String()
+	systemIntegrator, err := rpc.DescribeIntegratorById(ctx, sID)
+	// systemIntegrator, err := l.rawSqlDao.GetSystemIntegratorByID(ctx, sID)
+	if err != nil {
+		logx.E(ctx, "GetSystemIntegratorByID sID:%d err:%+v", sID, err)
+		return oldErr
+	}
+	newErr := errs.ConvertErrMsg(systemIntegrator.Name, oldErr)
+	return newErr
 }

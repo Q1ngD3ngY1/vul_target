@@ -4,11 +4,10 @@ import (
 	"context"
 	"reflect"
 
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/config"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/dao/markdown"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/model"
-	pb "git.woa.com/dialogue-platform/lke_proto/pb-protocol/bot_knowledge_config_server"
-	"git.woa.com/dialogue-platform/lke_proto/pb-protocol/knowledge"
+	"git.woa.com/adp/kb/kb-config/internal/config"
+	"git.woa.com/adp/kb/kb-config/internal/entity"
+	"git.woa.com/adp/kb/kb-config/internal/util/markdown"
+	pb "git.woa.com/adp/pb-go/kb/kb_config"
 )
 
 // 召回内容后处理
@@ -21,13 +20,13 @@ import (
 // searchRsp 召回内容 rsp
 type searchRsp interface {
 	*pb.SearchRsp | *pb.SearchPreviewRsp | *pb.CustomSearchRsp | *pb.CustomSearchPreviewRsp |
-		*knowledge.SearchRealtimeRsp
+	*pb.SearchRealtimeRsp
 }
 
 // searchDoc 召回内容
 type searchDoc interface {
 	*pb.SearchRsp_Doc | *pb.SearchPreviewRsp_Doc | *pb.CustomSearchRsp_Doc | *pb.CustomSearchPreviewRsp_Doc |
-		*knowledge.SearchRealtimeRsp_Doc
+	*pb.SearchRealtimeRsp_Doc
 }
 
 type searchDocer interface {
@@ -57,7 +56,7 @@ func docsUnique[T searchRsp](ctx context.Context, rsp T) T {
 		r.Docs = uniqueDocs(r.GetDocs())
 	case *pb.CustomSearchPreviewRsp:
 		r.Docs = uniqueDocs(r.GetDocs())
-	case *knowledge.SearchRealtimeRsp:
+	case *pb.SearchRealtimeRsp:
 		r.Docs = uniqueDocs(r.GetDocs())
 	}
 	return rsp
@@ -68,7 +67,7 @@ func uniqueDocs[T searchDoc](docs []T) []T {
 	var u []T
 	for _, doc := range docs {
 		v := searchDocer(doc)
-		if v.GetDocType() == model.DocTypeSegment {
+		if v.GetDocType() == entity.DocTypeSegment {
 			if _, ok := m[v.GetOrgData()]; !ok {
 				m[v.GetOrgData()] = struct{}{}
 				u = append(u, doc)
@@ -111,7 +110,7 @@ func docsPlaceholder[T searchRsp](ctx context.Context, rsp T) T {
 			r.Docs[i].Question, r.Docs[i].QuestionPlaceholders = extractPlaceholder(md, v.GetQuestion())
 			r.Docs[i].OrgData, r.Docs[i].OrgDataPlaceholders = extractPlaceholder(md, v.GetOrgData())
 		}
-	case *knowledge.SearchRealtimeRsp:
+	case *pb.SearchRealtimeRsp:
 		for i, v := range r.GetDocs() {
 			r.Docs[i].Answer, r.Docs[i].AnswerPlaceholders = extractKnowledgePlaceholder(md, v.GetAnswer())
 			r.Docs[i].Question, r.Docs[i].QuestionPlaceholders = extractKnowledgePlaceholder(md, v.GetQuestion())
@@ -135,12 +134,12 @@ func extractPlaceholder(md *markdown.Markdown, content string) (string, []*pb.Pl
 	return string(c), placeholders
 }
 
-func extractKnowledgePlaceholder(md *markdown.Markdown, content string) (string, []*knowledge.Placeholder) {
+func extractKnowledgePlaceholder(md *markdown.Markdown, content string) (string, []*pb.Placeholder) {
 	c, p := md.ExtractLinkWithPlaceholder([]byte(content))
 
-	var placeholders []*knowledge.Placeholder
+	var placeholders []*pb.Placeholder
 	for _, v := range p {
-		placeholders = append(placeholders, &knowledge.Placeholder{
+		placeholders = append(placeholders, &pb.Placeholder{
 			Key:   v.Key,
 			Value: v.Value,
 		})

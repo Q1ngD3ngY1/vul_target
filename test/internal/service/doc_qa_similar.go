@@ -3,25 +3,26 @@ package service
 import (
 	"context"
 
+	"git.woa.com/adp/common/x/contextx"
+	"git.woa.com/adp/common/x/gox/convx"
+	"git.woa.com/adp/common/x/gox/mapx"
+	"git.woa.com/adp/common/x/gox/slicex"
 	"git.woa.com/adp/common/x/trpcx/plugins/i18n"
-	"git.woa.com/baicaoyuan/moss/types/mapx"
-	"git.woa.com/baicaoyuan/moss/types/slicex"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/model"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg/errs"
-	pb "git.woa.com/dialogue-platform/lke_proto/pb-protocol/bot_knowledge_config_server"
+	docEntity "git.woa.com/adp/kb/kb-config/internal/entity/document"
+	"git.woa.com/adp/kb/kb-config/internal/entity/qa"
+	"git.woa.com/adp/kb/kb-config/pkg/errs"
+	pb "git.woa.com/adp/pb-go/kb/kb_config"
 )
 
 // ListQaSimilar 获取相似问答对
 func (s *Service) ListQaSimilar(ctx context.Context, req *pb.ListQaSimilarReq) (*pb.ListQaSimilarRsp, error) {
 	rsp := new(pb.ListQaSimilarRsp)
-	corpID := pkg.CorpID(ctx)
-	var err error
-	app, err := s.getAppByAppBizID(ctx, req.GetBotBizId())
+	botBizID := convx.Uint64ToString(req.GetBotBizId())
+	app, err := s.DescribeAppAndCheckCorp(ctx, botBizID)
 	if err != nil {
 		return rsp, errs.ErrRobotNotFound
 	}
-	total, qaSimilarList, err := s.dao.ListQASimilar(ctx, corpID, app.ID, req.GetPageNumber(), req.GetPageSize())
+	total, qaSimilarList, err := s.qaLogic.ListQASimilar(ctx, app.CorpPrimaryId, app.PrimaryId, req.GetPageNumber(), req.GetPageSize())
 	if err != nil {
 		return rsp, errs.ErrSystem
 	}
@@ -38,26 +39,26 @@ func (s *Service) ListQaSimilar(ctx context.Context, req *pb.ListQaSimilarReq) (
 func (s *Service) DescribeQaSimilar(ctx context.Context, req *pb.DescribeQaSimilarReq) (*pb.DescribeQaSimilarRsp,
 	error) {
 	rsp := new(pb.DescribeQaSimilarRsp)
-	corpID := pkg.CorpID(ctx)
-	app, err := s.getAppByAppBizID(ctx, req.GetBotBizId())
+	botBizID := convx.Uint64ToString(req.GetBotBizId())
+	app, err := s.DescribeAppAndCheckCorp(ctx, botBizID)
 	if err != nil {
 		return rsp, errs.ErrRobotNotFound
 	}
-	qaSimilar, err := s.dao.GetQASimilarBizID(ctx, corpID, req.GetSimilarBizId())
+	qaSimilar, err := s.qaLogic.GetQASimilarBizID(ctx, app.CorpPrimaryId, req.GetSimilarBizId())
 	if err != nil {
 		return rsp, errs.ErrSystem
 	}
-	details, err := s.dao.GetQADetails(ctx, corpID, app.ID, []uint64{qaSimilar.QaID, qaSimilar.SimilarID})
+	details, err := s.qaLogic.GetQADetails(ctx, app.CorpPrimaryId, app.PrimaryId, []uint64{qaSimilar.QaID, qaSimilar.SimilarID})
 	if err != nil {
 		return rsp, errs.ErrQANotFound
 	}
 	var lastDocID uint64
 	var fileName, fileType string
-	docs := map[uint64]*model.Doc{}
+	docs := map[uint64]*docEntity.Doc{}
 	for _, qa := range details {
 		// 文档ID不为0，并且第二个的docID和第一个docID不一样
 		if qa.DocID != 0 && qa.DocID != lastDocID {
-			docs, err = s.dao.GetDocByIDs(ctx, []uint64{qa.DocID}, app.ID)
+			docs, err = s.docLogic.GetDocByIDs(ctx, []uint64{qa.DocID}, app.PrimaryId)
 			if err != nil {
 				return rsp, errs.ErrDocNotFound
 			}
@@ -69,15 +70,16 @@ func (s *Service) DescribeQaSimilar(ctx context.Context, req *pb.DescribeQaSimil
 		}
 		lastDocID = qa.DocID
 		rsp.List = append(rsp.List, &pb.DescribeQaSimilarRsp_QA{
-			QaBizId:    qa.BusinessID,
-			Question:   qa.Question,
-			Source:     qa.Source,
-			SourceDesc: i18n.Translate(ctx, qa.SourceDesc(docs)),
-			Answer:     qa.Answer,
-			UpdateTime: qa.UpdateTime.Unix(),
-			DocBizId:   qa.DocBizID(docs),
-			FileName:   fileName,
-			FileType:   fileType,
+			QaBizId:     qa.BusinessID,
+			Question:    qa.Question,
+			Source:      qa.Source,
+			SourceDesc:  i18n.Translate(ctx, qa.SourceDesc(docs)),
+			Answer:      qa.Answer,
+			UpdateTime:  qa.UpdateTime.Unix(),
+			DocBizId:    qa.DocBizID(docs),
+			FileName:    fileName,
+			FileType:    fileType,
+			EnableScope: pb.RetrievalEnableScope(qa.EnableScope),
 		})
 	}
 	return rsp, nil
@@ -86,9 +88,9 @@ func (s *Service) DescribeQaSimilar(ctx context.Context, req *pb.DescribeQaSimil
 // SubmitQaSimilar 相似文档提交处理结果
 func (s *Service) SubmitQaSimilar(ctx context.Context, req *pb.SubmitQaSimilarReq) (*pb.SubmitQaSimilarRsp, error) {
 	rsp := new(pb.SubmitQaSimilarRsp)
-	corpID := pkg.CorpID(ctx)
-	staffID := pkg.StaffID(ctx)
-	app, err := s.getAppByAppBizID(ctx, req.GetBotBizId())
+	staffID := contextx.Metadata(ctx).StaffID()
+	botBizID := convx.Uint64ToString(req.GetBotBizId())
+	app, err := s.DescribeAppAndCheckCorp(ctx, botBizID)
 	if err != nil {
 		return rsp, errs.ErrRobotNotFound
 	}
@@ -96,7 +98,7 @@ func (s *Service) SubmitQaSimilar(ctx context.Context, req *pb.SubmitQaSimilarRe
 		return rsp, err
 	}
 	if req.GetIsIgnoreAll() {
-		if err = s.dao.IgnoreAllQASimilar(ctx, corpID, app.ID); err != nil {
+		if err = s.qaLogic.IgnoreAllQASimilar(ctx, app.CorpPrimaryId, app.PrimaryId); err != nil {
 			return rsp, errs.ErrSystem
 		}
 		return rsp, nil
@@ -123,31 +125,30 @@ func (s *Service) SubmitQaSimilar(ctx context.Context, req *pb.SubmitQaSimilarRe
 		}
 	}
 	delQaIDs = slicex.Unique(delQaIDs)
-	delQas := make([]*model.DocQA, 0)
+	delQas := make([]*qa.DocQA, 0)
 
 	if len(delQaIDs) != 0 {
 		// Deprecated
-		qas, err := s.dao.GetQADetails(ctx, corpID, app.ID, delQaIDs)
+		qas, err := s.qaLogic.GetQADetails(ctx, app.CorpPrimaryId, app.PrimaryId, delQaIDs)
 		if err != nil {
 			return rsp, errs.ErrQANotFound
 		}
 		delQas = mapx.Values(qas)
 	} else if len(delQaBizIDs) != 0 {
 		// 保留
-		qas, err := s.dao.GetQADetailsByBizIDs(ctx, corpID, app.ID, delQaBizIDs)
+		qas, err := s.qaLogic.GetQADetailsByBizIDs(ctx, app.CorpPrimaryId, app.PrimaryId, delQaBizIDs)
 		if err != nil {
 			return rsp, errs.ErrQANotFound
 		}
 		delQas = mapx.Values(qas)
 	}
 	if len(qaSimilarIDs) != 0 {
-		// Deprecated
-		if err = s.dao.DoQASimilar(ctx, corpID, app.ID, staffID, qaSimilarIDs, delQas); err != nil {
+		if err = s.qaLogic.DoQASimilar(ctx, app.CorpPrimaryId, app.PrimaryId, staffID, qaSimilarIDs, delQas); err != nil {
 			return rsp, errs.ErrSystem
 		}
 	} else if len(qaSimilarBizIDs) != 0 {
 		// 保留
-		if err = s.dao.DoQABizSimilar(ctx, corpID, app.ID, staffID, qaSimilarBizIDs, delQas); err != nil {
+		if err = s.qaLogic.DoQABizSimilar(ctx, app.CorpPrimaryId, app.PrimaryId, staffID, qaSimilarBizIDs, delQas); err != nil {
 			return rsp, errs.ErrSystem
 		}
 	}

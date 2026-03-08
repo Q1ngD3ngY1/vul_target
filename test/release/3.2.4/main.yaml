@@ -1,0 +1,23 @@
+
+handle_tasks:
+  # 其他保持不变，新增以下几个：
+  - "release_doc"
+  - "release_doc_qa"
+  - "release_label"
+  - "release_rejected_question"
+  - "release_knowledge_config"
+  - "full_update_database_label_task"
+
+# 数据清理任务配置
+default_database_clean_config:
+  # 其他保持不变，修改以下配置：
+  doc_batch_size: 100
+
+# 自动刷新任务配置
+auto_doc_refresh_config:
+  # 其他保持不变，修改以下配置：
+  enable: true
+
+# 新增 public_corp_primary_ids，越权校验放通，比如应用模板场景
+public_corp_primary_ids:
+  - 1042

@@ -1,0 +1,22 @@
+----------CAPI----------
+ListDocSegment入参新增：SegmentBizId
+新增接口: ModifyKBConfigList、DescribeKBConfigList
+
+
+----------七彩石----------
+application.yaml
+org_data_max_length: 400000  # 文档解析服务返回的org_data最大长度
+
+# 支持新的文件类型
+file_type_size:
+    numbers: 20971520 # 20M
+    key: 52428800 # 50M
+    pages: 52428800 # 50M
+
+doc_preview:
+  key:
+    url: https://adp.cloud.tencent.com/workflow/preview
+  pages:
+    url: https://adp.cloud.tencent.com/workflow/preview
+  numbers:
+    url: https://adp.cloud.tencent.com/workflow/preview

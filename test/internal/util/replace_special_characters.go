@@ -1,14 +1,10 @@
-// qbot
-//
-// @(#)replace_special_characters.go  星期二, 五月 28, 2024
-// Copyright(c) 2024, randalchen@Tencent. All rights reserved.
-
 package util
 
 import (
-	"golang.org/x/text/width"
 	"strings"
 	"unicode"
+
+	"golang.org/x/text/width"
 )
 
 // ReplaceSpecialCharacters 特殊字符处理函数：大小转小写，全角转半角，去掉标点符号

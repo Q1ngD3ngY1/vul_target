@@ -1,0 +1,31 @@
+----------CAPI----------
+API 新增参数 EnableScope
+SaveDoc, ModifyDoc, BatchModifyDoc, DescribeDoc, ListDoc, CreateQA, ModifyQA, BatchModifyQA, DescribeQA, ListQA,
+AddDbSource, UpdateDbSource, ListDbSource,ListDbTable, CreateWebTaskInfo
+
+数据结构：
+ListQaItem: 新增EnableScope，DocEnableScope字段
+ListDocItem: 新增EnableScope字段
+DbSourceView: 新增EnableScope字段
+DbTableView: 新增EnableScope, DbEnableScope字段
+
+
+
+----------七彩石----------
+kb-config_zh-CN.json
+```json
+  "KeyEnableScope": "生效范围（非必填）",
+  "KeyEnableScopeAll": "调试/发布都生效",
+  "KeyEnableScopeDev": "仅调试生效",
+  "KeyEnableScopePublish": "仅发布生效",
+  "KeyEnableScopeDisable": "不生效",
+```
+
+kb-config_en-US.json
+```json
+  "KeyEnableScope": "Enable scope (optional)",
+  "KeyEnableScopeAll": "all",
+  "KeyEnableScopeDev": "dev-domain",
+  "KeyEnableScopePublish": "puhlish-domain",
+  "KeyEnableScopeDisable": "disable",
+```

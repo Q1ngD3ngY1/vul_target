@@ -2,84 +2,106 @@
 package service
 
 import (
-	"context"
-	"fmt"
-	Permis "git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/logic/permissions"
-	"time"
+	pb "git.woa.com/adp/pb-go/kb/kb_config"
 
-	"git.code.oa.com/trpc-go/trpc-database/goredis"
-	"git.code.oa.com/trpc-go/trpc-database/mysql"
-	"git.code.oa.com/trpc-go/trpc-go"
-	"git.code.oa.com/trpc-go/trpc-go/log"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/client"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/dao"
-	"github.com/go-redis/redis/v8"
-	"gorm.io/gorm"
+	"git.woa.com/adp/kb/kb-config/internal/dao"
+	dbdao "git.woa.com/adp/kb/kb-config/internal/dao/database"
+	kbdao "git.woa.com/adp/kb/kb-config/internal/dao/kb"
+	labeldao "git.woa.com/adp/kb/kb-config/internal/dao/label"
+	"git.woa.com/adp/kb/kb-config/internal/dao/llm"
+	"git.woa.com/adp/kb/kb-config/internal/dao/types"
+	auditLogic "git.woa.com/adp/kb/kb-config/internal/logic/audit"
+	"git.woa.com/adp/kb/kb-config/internal/logic/category"
+	dbLogic "git.woa.com/adp/kb/kb-config/internal/logic/database"
+	docLogic "git.woa.com/adp/kb/kb-config/internal/logic/document"
+	"git.woa.com/adp/kb/kb-config/internal/logic/export"
+	"git.woa.com/adp/kb/kb-config/internal/logic/finance"
+	"git.woa.com/adp/kb/kb-config/internal/logic/kb"
+	kbPKGLogic "git.woa.com/adp/kb/kb-config/internal/logic/kb_package"
+	"git.woa.com/adp/kb/kb-config/internal/logic/label"
+	"git.woa.com/adp/kb/kb-config/internal/logic/localcache"
+	"git.woa.com/adp/kb/kb-config/internal/logic/qa"
+	releaseLogic "git.woa.com/adp/kb/kb-config/internal/logic/release"
+	segLogic "git.woa.com/adp/kb/kb-config/internal/logic/segment"
+	"git.woa.com/adp/kb/kb-config/internal/logic/task"
+	"git.woa.com/adp/kb/kb-config/internal/logic/third_document"
+	"git.woa.com/adp/kb/kb-config/internal/logic/user"
+	"git.woa.com/adp/kb/kb-config/internal/logic/vector"
+	"git.woa.com/adp/kb/kb-config/internal/rpc"
 )
 
 // Service is service logic object
 type Service struct {
-	dao         dao.Dao
-	permisLogic Permis.PermisLogic
+	pb.UnimplementedAdmin
+
+	rpc           *rpc.RPC
+	dao           dao.Dao
+	auditLogic    *auditLogic.Logic
+	cacheLogic    *localcache.Logic
+	docLogic      *docLogic.Logic
+	qaLogic       *qa.Logic
+	segLogic      *segLogic.Logic
+	releaseLogic  *releaseLogic.Logic
+	kbLogic       *kb.Logic
+	cateLogic     *category.Logic
+	userLogic     *user.Logic
+	labelLogic    *label.Logic
+	dbLogic       *dbLogic.Logic
+	exportLogic   *export.Logic
+	taskLogic     *task.Logic
+	vectorLogic   *vector.VectorSyncLogic
+	dbDao         dbdao.Dao
+	s3            dao.S3
+	kbDao         kbdao.Dao
+	labelDao      labeldao.Dao
+	financeLogic  *finance.Logic
+	promptDao     llm.Dao
+	thirdDocLogic *third_document.Logic
+	kbPKGLogic    *kbPKGLogic.Logic
+	AdminRdb      types.AdminRedis
 }
 
 // New creates service instance
-func New() *Service {
-	d := dao.New()
-	logic := Permis.NewPermisLogic(d)
+
+func New(rpc *rpc.RPC, d dao.Dao, auditLogic *auditLogic.Logic, cacheLogic *localcache.Logic, docLogic *docLogic.Logic, qaLogic *qa.Logic,
+	segLogic *segLogic.Logic, releaseLogic *releaseLogic.Logic, kbLogic *kb.Logic, s3 dao.S3,
+	cateLogic *category.Logic, userLogic *user.Logic, labelLogic *label.Logic, taskLogic *task.Logic,
+	dbLogic *dbLogic.Logic, exportLogic *export.Logic, vectorLogic *vector.VectorSyncLogic, dbDao dbdao.Dao,
+	kbDao kbdao.Dao, labelDao labeldao.Dao, financeLogic *finance.Logic, adminRdb types.AdminRedis, promptDao llm.Dao, thirdDocLogic *third_document.Logic,
+	kbPKGLogic *kbPKGLogic.Logic,
+) *Service {
 	srv := Service{
-		dao:         d,
-		permisLogic: logic,
+		rpc:           rpc,
+		auditLogic:    auditLogic,
+		cacheLogic:    cacheLogic,
+		docLogic:      docLogic,
+		qaLogic:       qaLogic,
+		segLogic:      segLogic,
+		releaseLogic:  releaseLogic,
+		dao:           d,
+		kbLogic:       kbLogic,
+		cateLogic:     cateLogic,
+		userLogic:     userLogic,
+		labelLogic:    labelLogic,
+		dbLogic:       dbLogic,
+		exportLogic:   exportLogic,
+		taskLogic:     taskLogic,
+		vectorLogic:   vectorLogic,
+		dbDao:         dbDao,
+		s3:            s3,
+		kbDao:         kbDao,
+		labelDao:      labelDao,
+		financeLogic:  financeLogic,
+		AdminRdb:      adminRdb,
+		promptDao:     promptDao,
+		thirdDocLogic: thirdDocLogic,
+		kbPKGLogic:    kbPKGLogic,
 	}
-	dao.Init(d.GetGormDB(), d.GetGormDBDelete(), d.GetTdsqlGormDB(), d.GetText2sqlGormDB())
-	client.Init(d.GetAdminApiCli(), d.GetDirectIndexCli(), d.GetRetrievalCli(), d.GetTaskFlowCli(),
-		d.GetTDocLinkerCli(), d.GetDocParseCli(), d.GetFinanceCli(), d.GetLlmmCli())
 
 	return &srv
 }
 
-// GetDB 返回DB实例
-func (s *Service) GetDB() mysql.Client {
-	return s.dao.GetDB()
-}
-
-// Scheduler 调度策略
-type Scheduler struct {
-	redisClient redis.UniversalClient
-}
-
-// NewScheduler 新建调度策略
-func NewScheduler() *Scheduler {
-	r, err := goredis.New("redis.qbot.admin", nil)
-	ctx := trpc.BackgroundContext()
-	if err != nil {
-		log.ErrorContextf(ctx, "init Scheduler redis client failed.  err:%v", err)
-	} else {
-		log.InfoContextf(ctx, "init Scheduler goredis client success: %s", r.Ping(context.Background()).String())
-	}
-	return &Scheduler{
-		redisClient: r,
-	}
-}
-
-const (
-	// RedisKey 前缀标识
-	RedisKey = "lke:knowledge:scheduler"
-)
-
-// Schedule 互斥任务定时器； holeTime 默认1s
-func (s *Scheduler) Schedule(serviceName string, newNode string, holdTime time.Duration) (nowNode string, err error) {
-	ctx := context.TODO()
-	key := RedisKey + ":" + serviceName
-
-	res := s.redisClient.SetNX(ctx, key, newNode, holdTime)
-	if res.Val() {
-		return newNode, nil
-	}
-	return s.redisClient.Get(ctx, key).Val(), fmt.Errorf("locak failed")
-}
-
-// GetTdSqlDB 返回tdsql实例
-func (s *Service) GetTdSqlDB() *gorm.DB {
-	return s.dao.GetTdsqlGormDB()
+// GetVectorLogic 返回VectorLogic 实例
+func (s *Service) GetVectorLogic() *vector.VectorSyncLogic {
+	return s.vectorLogic
 }

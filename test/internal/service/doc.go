@@ -3,6 +3,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -10,49 +11,61 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
-	"git.woa.com/adp/common/x/trpcx/plugins/i18n"
-	logicDocQa "git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/logic/doc_qa"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg/i18nkey"
+	"git.woa.com/adp/common/x/gox/ptrx"
 
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/client"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/logic/permissions"
-
-	logicCommon "git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/logic/common"
-	logicDoc "git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/logic/doc"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg/errs"
-
-	"gorm.io/gorm"
-
-	knowClient "git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/client"
-
-	"git.woa.com/dialogue-platform/common/v3/errors"
-
-	"golang.org/x/exp/maps"
+	"git.woa.com/adp/common/x/logx/auditx"
+	"git.woa.com/adp/kb/kb-config/internal/entity/finance"
 
 	md "github.com/JohannesKaufmann/html-to-markdown"
 	"github.com/PuerkitoBio/goquery"
 	rd "github.com/go-shiori/go-readability"
-	jsoniter "github.com/json-iterator/go"
 	"github.com/spf13/cast"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/exp/maps"
+	"golang.org/x/exp/slices"
+	"gorm.io/gorm"
 
+	"git.code.oa.com/trpc-go/trpc-go"
 	"git.code.oa.com/trpc-go/trpc-go/log"
-	"git.woa.com/baicaoyuan/moss/metadata"
-	"git.woa.com/baicaoyuan/moss/types/mapx"
-	"git.woa.com/baicaoyuan/moss/types/slicex"
-	"git.woa.com/baicaoyuan/moss/utils"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/config"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/dao"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/logic/doc_diff_task"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/model"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/util"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg"
-	utilConfig "git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/util/config"
-	pb "git.woa.com/dialogue-platform/lke_proto/pb-protocol/bot_knowledge_config_server"
-	"git.woa.com/dialogue-platform/lke_proto/pb-protocol/knowledge"
+	"git.woa.com/adp/common/x/clientx/s3x"
+	"git.woa.com/adp/common/x/contextx"
+	"git.woa.com/adp/common/x/encodingx/jsonx"
+	"git.woa.com/adp/common/x/errx"
+	"git.woa.com/adp/common/x/gox"
+	"git.woa.com/adp/common/x/gox/convx"
+	"git.woa.com/adp/common/x/gox/mapx"
+	"git.woa.com/adp/common/x/gox/slicex"
+	"git.woa.com/adp/common/x/gox/stringx"
+	"git.woa.com/adp/common/x/logx"
+	"git.woa.com/adp/common/x/mathx/randx"
+	"git.woa.com/adp/common/x/trpcx/plugins/i18n"
+	"git.woa.com/adp/common/x/utilx"
+	"git.woa.com/adp/common/x/utilx/validx"
+	"git.woa.com/adp/kb/kb-config/internal/async/scheduler"
+	"git.woa.com/adp/kb/kb-config/internal/config"
+	"git.woa.com/adp/kb/kb-config/internal/dao"
+	"git.woa.com/adp/kb/kb-config/internal/entity"
+	"git.woa.com/adp/kb/kb-config/internal/entity/category"
+	cateEntity "git.woa.com/adp/kb/kb-config/internal/entity/category"
+	docEntity "git.woa.com/adp/kb/kb-config/internal/entity/document"
+	labelEntity "git.woa.com/adp/kb/kb-config/internal/entity/label"
+	qaEntity "git.woa.com/adp/kb/kb-config/internal/entity/qa"
+	releaseEntity "git.woa.com/adp/kb/kb-config/internal/entity/release"
+	segEntity "git.woa.com/adp/kb/kb-config/internal/entity/segment"
+	logicCommon "git.woa.com/adp/kb/kb-config/internal/logic/common"
+	logicDoc "git.woa.com/adp/kb/kb-config/internal/logic/document"
+	"git.woa.com/adp/kb/kb-config/internal/logic/user"
+	"git.woa.com/adp/kb/kb-config/internal/util"
+	"git.woa.com/adp/kb/kb-config/internal/util/idgen"
+	"git.woa.com/adp/kb/kb-config/pkg/errs"
+	"git.woa.com/adp/kb/kb-config/pkg/i18nkey"
+	appconfig "git.woa.com/adp/pb-go/app/app_config"
+	pb "git.woa.com/adp/pb-go/kb/kb_config"
+	pm "git.woa.com/adp/pb-go/platform/platform_manager"
 	secapi "git.woa.com/sec-api/go/scurl"
 )
 
@@ -70,50 +83,46 @@ import (
 //   - 补充说明：corp和app不匹配的情况存在于分享链接的情况，其他情况不应该出现，也不应该跨数据访问
 func (s *Service) DescribeStorageCredential(ctx context.Context, req *pb.DescribeStorageCredentialReq) (
 	*pb.DescribeStorageCredentialRsp, error) {
-	log.InfoContextf(ctx, "DescribeStorageCredential|req:%+v", req)
-	corpID := pkg.CorpID(ctx)
-	corp, err := s.getCorpByID(ctx, corpID)
-	if err != nil || corp == nil {
+	logx.I(ctx, "DescribeStorageCredential|req:%+v", req)
+	corpID := contextx.Metadata(ctx).CorpID()
+	corpBizId, err := s.getCorpByID(ctx, corpID)
+	if err != nil || corpBizId == 0 {
 		return nil, errs.ErrCorpNotFound
 	}
 	pathList := make([]string, 0)
 	var fileCosPath, imageCosPath, uploadCosPath string
 	fileName := s.getFileNameByType(req.GetFileType())
 	if req.GetBotBizId() != "" {
-		botBizID, err := util.CheckReqParamsIsUint64(ctx, req.GetBotBizId())
-		if err != nil {
-			return nil, err
-		}
-		app, err := s.getAppByAppBizID(ctx, botBizID)
+		app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
 		// 背景：给C端分享出去的链接使用上传图片或者文档，此时当前登录的Corp和App可能不是归属关系
 		// 这里不强制校验AppID和CorpID是否强制是归属关系
 		// 下面路径的拼接已经保证了获取的权限只能是当前Corp下的，不存在跨Corp越权问题
-		if err != nil && !errors.Is(err, errs.ErrCorpAppNotEqual) {
+		if err != nil && !errx.Is(err, errs.ErrCorpAppNotEqual) {
 			return nil, errs.ErrRobotNotFound
 		}
 		if len(fileName) == 0 {
 			// corpCosPath是按企业维度维护的cos数据
 			// robotCosPath是按照机器人维度维护的cos数据
 			// 文档资料是按照机器人维度进行隔离，所以后续使用robotCosPath对外，corpCosPath只对存量的历史数据开放
-			corpCosPath := s.dao.GetCorpCOSPath(ctx, corpID)
-			fileCosPath = s.dao.GetCorpRobotCOSPath(ctx, corp.BusinessID, app.BusinessID, "")
-			imageCosPath = s.dao.GetCorpAppImagePath(ctx, corp.BusinessID, app.BusinessID, "")
+			corpCosPath := s.s3.GetCorpCOSPath(ctx, corpID)
+			fileCosPath = s.s3.GetCorpRobotCOSPath(ctx, corpBizId, app.BizId, "")
+			imageCosPath = s.s3.GetCorpAppImagePath(ctx, corpBizId, app.BizId, "")
 			pathList = []string{corpCosPath, fileCosPath, imageCosPath}
 		} else {
 			// 区分Cos公有权限场景还是私有权限场景
 			if req.GetIsPublic() {
-				uploadCosPath = s.dao.GetCorpAppImagePath(ctx, corp.BusinessID, app.BusinessID, fileName)
+				uploadCosPath = s.s3.GetCorpAppImagePath(ctx, corpBizId, app.BizId, fileName)
 			} else {
-				uploadCosPath = s.dao.GetCorpRobotCOSPath(ctx, corp.BusinessID, app.BusinessID, fileName)
+				uploadCosPath = s.s3.GetCorpRobotCOSPath(ctx, corpBizId, app.BizId, fileName)
 			}
 			pathList = []string{uploadCosPath}
 		}
 	} else {
 		if len(fileName) == 0 {
-			imageCosPath = s.dao.GetCorpImagePath(ctx, corp.BusinessID)
+			imageCosPath = s.s3.GetCorpImagePath(ctx, corpBizId)
 			pathList = append(pathList, imageCosPath)
 		} else {
-			uploadCosPath = filepath.Join(s.dao.GetCorpImagePath(ctx, corp.BusinessID), fileName)
+			uploadCosPath = filepath.Join(s.s3.GetCorpImagePath(ctx, corpBizId), fileName)
 			pathList = append(pathList, uploadCosPath)
 		}
 	}
@@ -122,20 +131,24 @@ func (s *Service) DescribeStorageCredential(ctx context.Context, req *pb.Describ
 	if len(req.GetTypeKey()) > 0 {
 		typeKey = req.GetTypeKey()
 	}
-	res, err := s.dao.GetCredentialWithTypeKey(ctx, typeKey, pathList,
-		utils.When(len(fileName) == 0, model.ActionDownload, model.ActionUpload))
+	req2 := s3x.GetCredentialReq{
+		TypeKey:       typeKey,
+		Path:          pathList,
+		StorageAction: gox.IfElse[string](len(fileName) == 0, s3x.ActionDownload, s3x.ActionUpload),
+	}
+	res, err := s.s3.GetCredentialWithTypeKey(ctx, &req2)
 	if err != nil {
 		return nil, err
 	}
-	bucket, err := s.dao.GetBucketWithTypeKey(ctx, typeKey)
+	bucket, err := s.s3.GetBucketWithTypeKey(ctx, typeKey)
 	if err != nil {
 		return nil, err
 	}
-	region, err := s.dao.GetRegionWithTypeKey(ctx, typeKey)
+	region, err := s.s3.GetRegionWithTypeKey(ctx, typeKey)
 	if err != nil {
 		return nil, err
 	}
-	storageType, err := s.dao.GetStorageTypeWithTypeKey(ctx, typeKey)
+	storageType, err := s.s3.GetTypeWithTypeKey(ctx, typeKey)
 	if err != nil {
 		return nil, err
 	}
@@ -155,34 +168,29 @@ func (s *Service) DescribeStorageCredential(ctx context.Context, req *pb.Describ
 		CorpUin:     0,
 		Type:        storageType,
 	}
-	log.InfoContextf(ctx, "DescribeStorageCredential|rsp:%+v", rsp)
+	logx.I(ctx, "DescribeStorageCredential|rsp:%+v", rsp)
 	return rsp, nil
 }
 
 // ListDoc 文档列表
 func (s *Service) ListDoc(ctx context.Context, req *pb.ListDocReq) (*pb.ListDocRsp, error) {
-	log.InfoContextf(ctx, "ListDoc Req:%+v", req)
+	logx.I(ctx, "ListDoc Req:%+v", req)
 	rsp := new(pb.ListDocRsp)
-	corpID := pkg.CorpID(ctx)
 	if req.GetBotBizId() == "" {
 		return nil, errs.ErrParams
 	}
-	botBizID, err := util.CheckReqParamsIsUint64(ctx, req.GetBotBizId())
-	if err != nil {
-		return nil, err
-	}
-	app, err := s.getAppByAppBizID(ctx, botBizID)
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
 	if err != nil {
 		return rsp, errs.ErrRobotNotFound
 	}
 	if req.GetQueryType() == "" {
-		req.QueryType = model.DocQueryTypeFileName
+		req.QueryType = docEntity.DocQueryTypeFileName
 	}
-	docListReq, err := s.getDocListReq(ctx, req, corpID, app.ID, app.IsShared)
+	docListReq, err := s.getDocListReq(ctx, req, app.CorpPrimaryId, app.PrimaryId, app.IsShared)
 	if err != nil {
 		return rsp, err
 	}
-	total, docs, err := logicDoc.GetDocList(ctx, docListReq)
+	total, docs, err := s.docLogic.GetDocListByListReq(ctx, docListReq)
 	if err != nil {
 		return rsp, errs.ErrGetDocListFail
 	}
@@ -196,41 +204,41 @@ func (s *Service) ListDoc(ctx context.Context, req *pb.ListDocReq) (*pb.ListDocR
 		}
 	}
 	cateIDs := maps.Keys(cateIDMap)
-	cateMap, err := s.dao.GetCateByIDs(ctx, model.DocCate, cateIDs)
+	cateMap, err := s.cateLogic.DescribeCateByIDs(ctx, cateEntity.DocCate, cateIDs)
 	if err != nil {
-		log.ErrorContextf(ctx, "获取分类信息失败 err:%+v", err)
+		logx.E(ctx, "获取分类信息失败 err:%+v", err)
 		// API调用使用的出参，先只打印ERROR日志，不返回错误，避免现网有脏数据影响文档列表的展示，观察一段时间后再放开
-		// TODO: return nil, errs.ErrCateNotFound
+		// TODO: return nil, pkg.ErrCateNotFound
 	}
 	maxProcessUnstableStatusDocCount := 10 // 最大处理非稳定状态时间过长文档数，避免处理太多导致接口超时
 	processUnstableStatusDocCount := 0
 	for _, doc := range docs {
-		if !doc.IsStableStatus() && doc.Status != model.DocStatusReleasing {
+		if !doc.IsStableStatus() && doc.Status != docEntity.DocStatusReleasing {
 			// 兜底策略：避免文档一直阻塞在非稳定状态（除了发布中状态由admin维护，不需要兜底）
 			if processUnstableStatusDocCount >= maxProcessUnstableStatusDocCount {
 				// 最大处理非稳定状态时间过长文档数，避免处理太多导致接口超时
 				continue
 			}
 			// 如果是非稳定状态时间过长，打印ERROR日志，并更新成失败状态
-			logicDoc.ProcessUnstableStatusDoc(ctx, doc)
+			s.docLogic.ProcessUnstableStatusDoc(ctx, doc)
 			processUnstableStatusDocCount++
 		}
 	}
-	qaNums, err := s.dao.GetDocQANum(ctx, corpID, app.ID, docIDs)
+	qaNums, err := s.qaLogic.GetDocQANum(ctx, app.CorpPrimaryId, app.PrimaryId, docIDs)
 	if err != nil {
 		return rsp, errs.ErrSystem
 	}
 	// 检查文档是否在发布中
-	releasingDocIdMap, err := logicDoc.GetReleasingDocId(ctx, app.ID, docIDs)
+	releasingDocIdMap, err := s.docLogic.GetReleasingDocId(ctx, app.PrimaryId, docIDs)
 	if err != nil {
-		log.ErrorContextf(ctx, "获取发布中的文档失败 err:%+v", err)
+		logx.E(ctx, "获取发布中的文档失败 err:%+v", err)
 		return rsp, errs.ErrSystem
 	}
-	latestRelease, err := s.dao.GetLatestRelease(ctx, corpID, app.ID)
+	latestRelease, err := s.releaseLogic.GetLatestRelease(ctx, app.CorpPrimaryId, app.PrimaryId)
 	if err != nil {
 		return rsp, errs.ErrSystem
 	}
-	mapDocID2AttrLabels, err := s.dao.GetDocAttributeLabelDetail(ctx, app.ID, docIDs)
+	mapDocID2AttrLabels, err := s.labelLogic.GetDocAttributeLabelDetail(ctx, app.PrimaryId, docIDs)
 	if err != nil {
 		return rsp, errs.ErrSystem
 	}
@@ -241,17 +249,19 @@ func (s *Service) ListDoc(ctx context.Context, req *pb.ListDocReq) (*pb.ListDocR
 	docAuditFailMap, _ := s.docAuditMap(ctx, docs, app)
 	rsp.Total = total
 	rsp.List = make([]*pb.ListDocRsp_Doc, 0, len(docs))
-	//获取员工名称
-	staffByID, err := client.ListCorpStaffByIds(ctx, pkg.CorpBizID(ctx), staffIDs)
-	if err != nil { //失败降级为返回员工ID
-		log.ErrorContextf(ctx, "ListDbSource get staff name err:%v,staffIDs:%v", err, staffIDs)
+	// 获取员工名称
+	staffs, err := s.rpc.PlatformAdmin.DescribeStaffList(ctx, &pm.DescribeStaffListReq{
+		StaffIds: staffIDs,
+	})
+	if err != nil { // 失败降级为返回员工ID
+		logx.E(ctx, "ListDoc get staff name staffIDs:%v, error:%v", staffIDs, err)
 	}
 	for _, doc := range docs {
 		docPb := logicDoc.DbDoc2PbDoc(ctx, releasingDocIdMap, doc, latestRelease, qaNums, mapDocID2AttrLabels,
 			docParsesFailMap, docAuditFailMap, cateMap, app.IsShared)
-		if staffName, ok := staffByID[doc.StaffID]; ok { //赋值员工名称
-			docPb.StaffName = staffName
-		} else { //没取到返回员工ID
+		if staff, ok := staffs[doc.StaffID]; ok { // 赋值员工名称
+			docPb.StaffName = staff.GetNickName()
+		} else { // 没取到返回员工ID
 			docPb.StaffName = cast.ToString(doc.StaffID)
 		}
 		rsp.List = append(rsp.List, docPb)
@@ -259,16 +269,16 @@ func (s *Service) ListDoc(ctx context.Context, req *pb.ListDocReq) (*pb.ListDocR
 	return rsp, nil
 }
 
-func (s *Service) docAuditMap(ctx context.Context, docs []*model.Doc, app *model.App) (
-	map[uint64]model.AuditStatus, error) {
+func (s *Service) docAuditMap(ctx context.Context, docs []*docEntity.Doc, app *entity.App) (
+	map[uint64]releaseEntity.AuditStatus, error) {
 	docParseFailIDs := make([]uint64, 0)
 	for _, doc := range docs {
-		if doc.Status == model.DocStatusAuditFail {
+		if doc.Status == docEntity.DocStatusAuditFail {
 			docParseFailIDs = append(docParseFailIDs, doc.ID)
-			log.DebugContextf(ctx, "docAuditMap doc.ID:%d", doc.ID)
+			logx.D(ctx, "docAuditMap doc.ID:%d", doc.ID)
 		}
 	}
-	docAuditFailMap, err := s.dao.GetBizAuditStatusByRelateIDs(ctx, app.ID, app.CorpID, docParseFailIDs)
+	docAuditFailMap, err := s.auditLogic.GetBizAuditStatusByRelateIDs(ctx, app.PrimaryId, app.CorpPrimaryId, docParseFailIDs)
 	if err != nil {
 		return docAuditFailMap, errs.ErrAuditNotFound
 	}
@@ -276,37 +286,37 @@ func (s *Service) docAuditMap(ctx context.Context, docs []*model.Doc, app *model
 }
 
 func (s *Service) isAllowRetry(ctx context.Context, docID uint64, docStatus uint32,
-	docParsesFailMap map[uint64]model.DocParse,
-	docAuditFailMap map[uint64]model.AuditStatus) bool {
+	docParsesFailMap map[uint64]docEntity.DocParse,
+	docAuditFailMap map[uint64]releaseEntity.AuditStatus) bool {
 	if docParsesFailMap == nil {
 		return false
 	}
-	if docStatus == model.DocStatusAuditFail {
-		if docAuditFail, ok := docAuditFailMap[docID]; ok && docAuditFail.Status == model.AuditStatusTimeoutFail {
+	if docStatus == docEntity.DocStatusAuditFail {
+		if docAuditFail, ok := docAuditFailMap[docID]; ok && docAuditFail.Status == releaseEntity.AuditStatusTimeoutFail {
 			return true
 		}
 		return false
 	}
-	if docStatus == model.DocStatusParseImportFail {
+	if docStatus == docEntity.DocStatusParseImportFail {
 		return true
 	}
-	log.DebugContextf(ctx, "isAllowRetry docParsesFailMap:%+v, "+
+	logx.D(ctx, "isAllowRetry docParsesFailMap:%+v, "+
 		"docID:%d, docStatus:%d", docParsesFailMap, docID, docStatus)
 	if len(docParsesFailMap) == 0 {
 		return false
 	}
-	docParsesFail := model.DocParse{}
+	docParsesFail := docEntity.DocParse{}
 	ok := false
 	if docParsesFail, ok = docParsesFailMap[docID]; !ok {
 		return false
 	}
-	if docParsesFail.Status == model.DocParseCallBackCancel {
+	if docParsesFail.Status == docEntity.DocParseCallBackCancel {
 		return true
 	}
-	result := &knowledge.FileParserCallbackReq{}
-	err := jsoniter.UnmarshalFromString(docParsesFail.Result, result)
+	result := &pb.FileParserCallbackReq{}
+	err := jsonx.UnmarshalFromString(docParsesFail.Result, result)
 	if err != nil {
-		log.ErrorContextf(ctx, "isAllowRetry UnmarshalFromString err:%+v, "+
+		logx.E(ctx, "isAllowRetry UnmarshalFromString err:%+v, "+
 			"docID:%d, docStatus:%d", err, docID, docStatus)
 		return true
 	}
@@ -320,33 +330,32 @@ func (s *Service) getIsAllowRetry(errorCode string) bool {
 	return config.App().DocParseErrorDefault.IsAllowRetry
 }
 
-func (s *Service) docParsesMap(ctx context.Context, docs []*model.Doc) (map[uint64]model.DocParse, error) {
-	log.DebugContextf(ctx, "docParsesMap docs:%+v", docs)
+func (s *Service) docParsesMap(ctx context.Context, docs []*docEntity.Doc) (map[uint64]docEntity.DocParse, error) {
+	logx.D(ctx, "docParsesMap docs:%+v", docs)
 	docParseFailIDs := make([]uint64, 0)
 	for _, doc := range docs {
-		if doc.Status == model.DocStatusParseFail {
+		if doc.Status == docEntity.DocStatusParseFail {
 			docParseFailIDs = append(docParseFailIDs, doc.ID)
 		}
 	}
-	docParsesMap := make(map[uint64]model.DocParse, len(docParseFailIDs))
+	docParsesMap := make(map[uint64]docEntity.DocParse, len(docParseFailIDs))
 	if len(docParseFailIDs) == 0 {
 		return docParsesMap, nil
 	}
-	docParses, err := s.dao.GetDocParseByDocIDs(ctx, docParseFailIDs, docs[0].RobotID)
+	docParses, err := s.docLogic.GetDocParseByDocIDs(ctx, docParseFailIDs, docs[0].RobotID)
 	if err != nil {
 		return docParsesMap, errs.ErrDocParseTaskNotFound
 	}
 	for _, v := range docParses {
 		if _, ok := docParsesMap[v.DocID]; !ok {
-			docParsesMap[v.DocID] = v
+			docParsesMap[v.DocID] = *v
 		}
 	}
-	log.DebugContextf(ctx, "docParsesMap docParsesMap:%+v", docParsesMap)
+	logx.D(ctx, "docParsesMap docParsesMap:%+v", docParsesMap)
 	return docParsesMap, nil
 }
 
-func (s *Service) getDocListReq(ctx context.Context, req *pb.ListDocReq, corpID, robotID uint64, isShared bool) (*model.DocListReq,
-	error) {
+func (s *Service) getDocListReq(ctx context.Context, req *pb.ListDocReq, corpID, robotID uint64, isShared bool) (*docEntity.DocListReq, error) {
 	validityStatus, status, err := s.getDocExpireStatus(req.GetStatus(), isShared)
 	if err != nil {
 		return nil, err
@@ -356,15 +365,15 @@ func (s *Service) getDocListReq(ctx context.Context, req *pb.ListDocReq, corpID,
 		return nil, err
 	}
 	var cateIDs []uint64
-	if req.GetCateBizId() != model.AllCateID {
-		cateID, err := s.dao.CheckCateBiz(ctx, model.DocCate, corpID, uint64(req.GetCateBizId()), robotID)
+	if req.GetCateBizId() != cateEntity.AllCateID {
+		cateID, err := s.cateLogic.VerifyCateBiz(ctx, cateEntity.DocCate, corpID, uint64(req.GetCateBizId()), robotID)
 		if err != nil {
 			return nil, err
 		}
-		if req.GetShowCurrCate() == model.ShowCurrCate { //只展示当前分类的数据
+		if req.GetShowCurrCate() == docEntity.ShowCurrCate { // 只展示当前分类的数据
 			cateIDs = append(cateIDs, cateID)
 		} else {
-			cateIDs, err = s.getCateChildrenIDs(ctx, model.DocCate, corpID, robotID, cateID)
+			cateIDs, err = s.getCateChildrenIDs(ctx, cateEntity.DocCate, corpID, robotID, cateID)
 			if err != nil {
 				return nil, err
 			}
@@ -373,13 +382,13 @@ func (s *Service) getDocListReq(ctx context.Context, req *pb.ListDocReq, corpID,
 
 	mapFilterFlag := make(map[string]bool)
 	for _, filterFlag := range req.GetFilterFlag() {
-		if !dao.IsValidDocFilterFlag(filterFlag.Flag) {
+		if !docEntity.IsValidDocFilterFlag(filterFlag.Flag) {
 			return nil, errs.ErrDocFilterFlagFail
 		}
 		mapFilterFlag[filterFlag.Flag] = filterFlag.Value
 	}
 
-	return &model.DocListReq{
+	docListReq := &docEntity.DocListReq{
 		CorpID:         corpID,
 		RobotID:        robotID,
 		FileName:       req.GetQuery(),
@@ -390,15 +399,21 @@ func (s *Service) getDocListReq(ctx context.Context, req *pb.ListDocReq, corpID,
 		PageSize:       req.GetPageSize(),
 		Status:         status,
 		ValidityStatus: validityStatus,
-		Opts:           []uint32{model.DocOptDocImport},
+		Opts:           []uint32{docEntity.DocOptDocImport},
 		CateIDs:        cateIDs,
-	}, nil
+	}
+
+	if req.GetEnableScope() != pb.RetrievalEnableScope_ENABLE_SCOPE_TYPE_UNKNOWN {
+		docListReq.EnableScope = ptrx.Uint32(uint32(req.GetEnableScope()))
+	}
+
+	return docListReq, nil
 }
 
 // checkCanSaveDoc 判断用户是否能上传文档
-func (s *Service) checkCanSaveDoc(ctx context.Context, robotID uint64, fileName, fileType string) error {
-	staffID := pkg.StaffID(ctx)
-	staff, err := s.dao.GetStaffByID(ctx, staffID)
+func (s *Service) checkCanSaveDoc(ctx context.Context, botBizID uint64, fileName, fileType string) error {
+	staffID := contextx.Metadata(ctx).StaffID()
+	staff, err := s.rpc.PlatformAdmin.GetStaffByID(ctx, staffID)
 	if err != nil || staff == nil {
 		return errs.ErrStaffNotFound
 	}
@@ -408,125 +423,121 @@ func (s *Service) checkCanSaveDoc(ctx context.Context, robotID uint64, fileName,
 	if !util.CheckFileType(ctx, fileName, fileType) {
 		return errs.ErrFileExtNotMatch
 	}
-	if err := s.isInTestMode(ctx, staff.CorpID, robotID, nil); err != nil {
-		return err
-	}
 	return nil
+}
+
+func checkAndGetEnableScope(ctx context.Context, app *entity.App,
+	enableScopeInReq pb.RetrievalEnableScope) pb.RetrievalEnableScope {
+	enableScope := enableScopeInReq
+	if enableScope == pb.RetrievalEnableScope_ENABLE_SCOPE_TYPE_UNKNOWN {
+		// 默认知识库为开发域生效；共享知识库默认为开发域/发布域都生效； 企点和历史api用户兼容
+		enableScope = gox.IfElse(app.IsShared,
+			pb.RetrievalEnableScope_ENABLE_SCOPE_TYPE_ALL, pb.RetrievalEnableScope_ENABLE_SCOPE_TYPE_DEV)
+		logx.W(ctx, "EnableScope is empty in req, set to %s default enableScope (appBizId:%d)",
+			enableScope.String(), app.BizId)
+	}
+	return enableScope
 }
 
 // SaveDoc 保存文档
 func (s *Service) SaveDoc(ctx context.Context, req *pb.SaveDocReq) (*pb.SaveDocRsp, error) {
-	log.InfoContextf(ctx, "SaveDoc req:%+v", req)
+	logx.I(ctx, "SaveDoc req:%+v", req)
 	rsp := new(pb.SaveDocRsp)
-	key := fmt.Sprintf(dao.LockForSaveDoc, req.GetCosHash())
+	if req.GetBotBizId() == "" || req.GetCosHash() == "" {
+		return rsp, errs.ErrWrapf(errs.ErrParameterInvalid, "BotBizId CosHash")
+	}
+
+	key := fmt.Sprintf(dao.LockForSaveDoc, req.GetBotBizId(), req.GetCosHash())
 	if err := s.dao.Lock(ctx, key, 120*time.Second); err != nil {
 		return nil, errs.ErrSameDocUploading
 	}
 	defer func() { _ = s.dao.UnLock(ctx, key) }()
-	staffID, corpID := pkg.StaffID(ctx), pkg.CorpID(ctx)
 
 	expireStart, expireEnd, err := util.CheckReqStartEndTime(ctx, req.GetExpireStart(), req.GetExpireEnd())
 	if err != nil {
 		return nil, err
 	}
-	fileSize, err := util.CheckReqParamsIsUint64(ctx, req.GetSize())
+	fileSize, err := validx.CheckAndParseUint64(req.GetSize())
 	if err != nil {
 		return nil, err
 	}
-	botBizID, err := util.CheckReqParamsIsUint64(ctx, req.GetBotBizId())
-	if err != nil {
-		return nil, err
-	}
-	app, err := s.getAppByAppBizID(ctx, botBizID)
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
 	if err != nil {
 		return rsp, errs.ErrRobotNotFound
 	}
 	if err = app.IsWriteable(); err != nil {
 		return rsp, err
 	}
-	corp, err := s.dao.GetCorpByID(ctx, app.CorpID)
+	corp, err := s.rpc.PlatformAdmin.DescribeCorpByPrimaryId(ctx, app.CorpPrimaryId)
+	// corp, err := s.dao.GetCorpByID(ctx, app.CorpPrimaryId)
 	if err != nil || corp == nil {
 		return rsp, errs.ErrCorpNotFound
 	}
 
-	if err = s.dao.CheckURLFile(ctx, app.CorpID, corp.BusinessID, app.BusinessID,
+	if err = s.s3.CheckURLFile(ctx, app.CorpPrimaryId, corp.GetCorpId(), app.BizId,
 		req.CosUrl, req.ETag); err != nil {
-		log.ErrorContextf(ctx, "SaveDoc|CheckURLFile failed, err:%+v", err)
+		logx.E(ctx, "SaveDoc|CheckURLFile failed, err:%+v", err)
 		return rsp, errs.ErrInvalidURL
 	}
 
-	if req.GetSource() == model.SourceFromWeb {
+	if req.GetSource() == docEntity.SourceFromWeb {
 		originalURL := strings.TrimSpace(req.GetOriginalUrl())
 		if originalURL == "" {
-			log.WarnContextf(ctx, "SaveDoc|Source|%d|OriginalUrl为空", req.GetSource())
+			logx.W(ctx, "SaveDoc|Source|%d|OriginalUrl为空", req.GetSource())
 			return rsp, errs.ErrParams
 		}
 		if utf8.RuneCountInString(originalURL) > 2048 {
-			log.ErrorContextf(ctx, "SaveDoc|OriginalUrl长度超过2048字符限制")
+			logx.E(ctx, "SaveDoc|OriginalUrl长度超过2048字符限制")
 			return rsp, errs.ErrInvalidURL
 		}
 	}
-	if req.GetSource() == model.SourceFromTxDoc && req.GetCustomerKnowledgeId() == "" {
-		log.WarnContextf(ctx, "SaveDoc|Source|%d|CustomerKnowledgeId为空", req.GetSource())
+	if req.GetSource() == docEntity.SourceFromTxDoc && req.GetCustomerKnowledgeId() == "" {
+		logx.W(ctx, "SaveDoc|Source|%d|CustomerKnowledgeId为空", req.GetSource())
 		return rsp, errs.ErrParams
 	}
 
-	if err = CheckIsUsedCharSizeExceeded(ctx, s.dao, botBizID, corpID); err != nil {
-		return rsp, s.dao.ConvertErrMsg(ctx, 0, app.CorpID, err)
+	if err = s.financeLogic.CheckKnowledgeBaseQuota(ctx, finance.CheckQuotaReq{App: app}); err != nil {
+		return rsp, logicCommon.ConvertErrMsg(ctx, s.rpc, 0, app.CorpPrimaryId, err)
 	}
-	if err := s.checkCanSaveDoc(ctx, app.ID, req.GetFileName(), req.GetFileType()); err != nil {
+	if err := s.checkCanSaveDoc(ctx, app.BizId, req.GetFileName(), req.GetFileType()); err != nil {
 		return rsp, err
 	}
 	if len(req.GetAttrLabels()) > 0 {
-		req.AttrRange = model.AttrRangeCondition
+		req.AttrRange = docEntity.AttrRangeCondition
 	} else {
-		req.AttrRange = model.AttrRangeAll
+		req.AttrRange = docEntity.AttrRangeAll
 	}
-	attrs, labels, err := s.checkAttributeLabelRefer(ctx, app.ID, config.App().AttributeLabel.DocAttrLimit,
+	attrs, labels, err := s.checkAttributeLabelRefer(ctx, app.PrimaryId, config.App().AttributeLabel.DocAttrLimit,
 		config.App().AttributeLabel.DocAttrLabelLimit, req.GetAttrRange(), req.GetAttrLabels())
 	if err != nil {
 		return rsp, err
 	}
 
+	enableScope := checkAndGetEnableScope(ctx, app, req.GetEnableScope())
+
 	// 导入问答仅支持xlsx格式
-	if req.Opt == model.DocOptBatchImport && req.GetFileType() != model.FileTypeXlsx {
+	if req.Opt == docEntity.DocOptBatchImport && (req.GetFileType() != docEntity.FileTypeXlsx &&
+		req.GetFileType() != docEntity.FileTypeNumbers) {
 		return rsp, errs.ErrDocQAFileFail
 	}
 	// 如果是导入excel，需要判别文件不是文档导入，如果是文档导入的excel就不需要检查表头了
-	if req.GetFileType() == model.FileTypeXlsx && req.Opt != model.DocOptDocImport {
-		if !app.IsShared {
-			releaseCount, err := logicDocQa.GetDocQaReleaseCount(ctx, corpID, app.ID)
-			if err != nil {
-				return rsp, errs.ErrGetReleaseFail
-			}
-			if releaseCount >= int64(config.App().RobotDefault.QaReleaseMaxLimit) {
-				return rsp, errs.ErrReleaseQaMaxCount
-			}
-		}
-		if rsp, err := s.checkXlsx(ctx, corpID, app.ID, req.GetCosUrl(), pkg.Uin(ctx), app.BusinessID); rsp != nil || err != nil {
+	if (req.GetFileType() == docEntity.FileTypeXlsx || req.GetFileType() == docEntity.FileTypeNumbers) &&
+		req.Opt != docEntity.DocOptDocImport {
+		if rsp, err := s.checkXlsx(ctx, app.CorpPrimaryId, app.PrimaryId, req.GetCosUrl(), contextx.Metadata(ctx).Uin(),
+			app.BizId); rsp != nil || err != nil {
 			return rsp, err
 		}
-	} else {
-		if !app.IsShared {
-			releaseCount, err := logicDoc.GetDocReleaseCount(ctx, corpID, app.ID)
-			if err != nil {
-				return rsp, errs.ErrGetReleaseFail
-			}
-			log.InfoContextf(ctx, "save|releaseCount:%d", releaseCount)
-			if releaseCount >= int64(config.App().RobotDefault.DocReleaseMaxLimit) {
-				return rsp, errs.ErrReleaseMaxCount
-			}
-		}
-		// 校验是否有重复文档
-		isDuplicate, rsp, err := logicDoc.CheckDuplicateFile(ctx, s.dao, req, corpID, app.ID)
-		if err != nil {
-			return nil, err
-		}
-		if isDuplicate {
-			return rsp, nil
-		}
 	}
-	auditFlag, err := s.getAuditFlag(req.GetFileType())
+	// 校验是否有重复文档
+	isDuplicate, rsp, err := s.docLogic.CheckDuplicateFile(ctx, req, app.CorpPrimaryId, app.PrimaryId)
+	logx.I(ctx, "save|isDuplicate:%t (doc:%s)", isDuplicate, req.FileName)
+	if err != nil {
+		return nil, err
+	}
+	if isDuplicate {
+		return rsp, nil
+	}
+	auditFlag, err := util.GetFileAuditFlag(req.GetFileType())
 	if err != nil {
 		return rsp, err
 	}
@@ -536,67 +547,240 @@ func (s *Service) SaveDoc(ctx context.Context, req *pb.SaveDocReq) (*pb.SaveDocR
 	}
 	// todo neckyang 校验自定义切分规则配置
 	var cateID uint64
-	if req.GetCateBizId() != "" {
+	if req.GetCateBizId() != "" && req.GetCateBizId() != "0" {
 		var catBizID uint64
 		catBizID, err = util.CheckReqParamsIsUint64(ctx, req.GetCateBizId())
 		if err != nil {
 			return nil, err
 		}
 		if catBizID == 0 {
+			logx.W(ctx, "SaveDoc|CateBizId is 0, catBizID:%d", catBizID)
 			return nil, errs.ErrCateNotFound
 		}
-		cateID, err = s.dao.CheckCateBiz(ctx, model.DocCate, corpID, catBizID, app.ID)
+		cateID, err = s.cateLogic.VerifyCateBiz(ctx, cateEntity.DocCate, app.CorpPrimaryId, catBizID, app.PrimaryId)
 	} else {
-		cateID, err = s.dao.GetRobotUncategorizedCateID(ctx, model.DocCate, corpID, app.ID)
+		cateID, err = s.cateLogic.DescribeRobotUncategorizedCateID(ctx, cateEntity.DocCate, app.CorpPrimaryId, app.PrimaryId)
 	}
 	if err != nil {
 		return nil, err
 	}
-	doc := s.newDoc(ctx, req, app, corpID, staffID, expireStart, expireEnd, fileSize, auditFlag, size, cateID)
+	staffID := contextx.Metadata(ctx).StaffID()
+	doc := s.newDoc(ctx, req, app, app.CorpPrimaryId, staffID, expireStart, expireEnd, uint64(enableScope), fileSize, auditFlag, size, cateID)
 	docAttributeLabelsFromPB, err := fillDocAttributeLabelsFromPB(ctx, req.GetAttrLabels(), true, attrs, labels)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.dao.CreateDoc(ctx, staffID, doc, docAttributeLabelsFromPB); err != nil {
-		log.ErrorContextf(ctx, "SaveDoc CreateDoc err: %+v", err)
+	if err := s.docLogic.CreateDoc(ctx, staffID, doc, docAttributeLabelsFromPB); err != nil {
+		logx.E(ctx, "SaveDoc CreateDoc err: %+v", err)
+		if errs.Is(err, errs.ErrFileSizeTooBig) || errs.Is(err, errs.ErrUnSupportFileType) {
+			return nil, err
+		}
 		return nil, errs.ErrSystem
 	}
+	auditx.Create(auditx.BizDocument).App(app.BizId).Space(app.SpaceId).Log(ctx, doc.BusinessID, doc.FileName)
 	rsp.DocBizId = doc.BusinessID
-	_ = s.dao.AddOperationLog(ctx, model.DocEventAdd, corpID, app.ID, req, rsp, nil, doc)
-	log.InfoContextf(ctx, "SaveDoc|rsp:%+v", rsp)
+	// 最后更新容量使用情况
+	objectInfo, err := s.s3.StatObject(ctx, doc.CosURL)
+	if err == nil && objectInfo != nil && objectInfo.Size > 0 {
+		doc.FileSize = uint64(objectInfo.Size)
+	}
+	if doc.FileSize != 0 {
+		err := s.financeLogic.UpdateAppCapacityUsage(ctx, entity.CapacityUsage{
+			StorageCapacity:   gox.IfElse(doc.Source == docEntity.SourceFromCorpCOSDoc, 0, int64(doc.FileSize)),
+			ComputeCapacity:   int64(doc.FileSize),
+			KnowledgeCapacity: int64(doc.FileSize),
+		}, doc.RobotID, doc.CorpID)
+		if err != nil {
+			return rsp, errs.ErrUpdateRobotUsedCharSizeFail
+		}
+	}
+	logx.I(ctx, "SaveDoc|rsp:%+v", rsp)
 	return rsp, nil
 }
 
-func (s *Service) newDoc(ctx context.Context, req *pb.SaveDocReq, app *model.App,
-	corpID, staffID, expireStart, expireEnd, fileSize uint64,
-	auditFlag uint32, size int, cateId uint64) *model.Doc {
+// checkXlsx 检查问答模板文件是否符合要求
+func (s *Service) checkXlsx(ctx context.Context, corpID, robotID uint64, cosURL string, uin string,
+	appBizID uint64) (*pb.SaveDocRsp, error) {
+	body, err := s.s3.GetObject(ctx, cosURL)
+	if err != nil {
+		return nil, errs.ErrSystem
+	}
+	// 将配置中文件头翻译成ctx中语言
+	var checkHead []string
+	for _, v := range docEntity.ExcelTplHead[:docEntity.ExcelTplQaEnableScopeIndex+1] {
+		checkHead = append(checkHead, i18n.Translate(ctx, v))
+	}
+	logx.I(ctx, "checkXlsx checkHead:%v", checkHead)
+	rows, bs, err := util.CheckXlsxContent(ctx, cosURL, 0, config.App().DocQA.ImportMaxLength,
+		checkHead, body, s.checkRow, uin, appBizID)
+	if err != nil {
+		if !errors.Is(err, errs.ErrExcelContent) {
+			return nil, err
+		}
+		key := cosURL + ".check.xlsx"
+		if err := s.s3.PutObject(ctx, bs, key); err != nil {
+			return nil, errs.ErrSystem
+		}
+		url, err := s.s3.GetPreSignedURL(ctx, key)
+		if err != nil {
+			return nil, errs.ErrSystem
+		}
+		return &pb.SaveDocRsp{
+			ErrorMsg:      i18n.Translate(ctx, i18nkey.KeyFileDataErrorPleaseDownloadErrorFile),
+			ErrorLink:     url,
+			ErrorLinkText: i18n.Translate(ctx, i18nkey.KeyDownload),
+		}, nil
+	}
+
+	allCates, err := s.cateLogic.DescribeCateList(ctx, category.QACate, corpID, robotID)
+	if err != nil {
+		return nil, errs.ErrSystem
+	}
+
+	tree := category.BuildCateTree(allCates)
+	for _, row := range rows {
+		_, cate := category.GetCatePath(row)
+		tree.Create(cate)
+	}
+
+	limit := config.App().DocQA.CateNodeLimit
+	if tree.NodeCount()-1 > limit {
+		return nil, errs.ErrWrapf(errs.ErrCodeCateCountExceed, i18n.Translate(ctx, i18nkey.KeyQACategoryCountExceeded),
+			limit)
+	}
+
+	return nil, nil
+}
+
+// checkRow check每一行的内容
+func (s *Service) checkRow(ctx context.Context, i int, row []string, questions *sync.Map, uin string, appBizID uint64,
+	uniqueImgHost *sync.Map) string {
+	ok, cates := category.GetCatePath(row)
+	if !ok {
+		return i18n.Translate(ctx, i18nkey.KeyCategoryErrorPleaseRefill)
+	}
+
+	for _, cate := range cates {
+		if err := checkCateName(ctx, cate); err != nil {
+			return errx.Msg(err)
+		}
+	}
+
+	if len(row) < docEntity.ExcelTplHeadLen-docEntity.ExcelTpOptionalLen {
+		return i18n.Translate(ctx, i18nkey.KeyQuestionOrAnswerEmptyPleaseFill)
+	}
+
+	answer := strings.TrimSpace(row[docEntity.ExcelTplAnswerIndex])
+	question := strings.TrimSpace(row[docEntity.ExcelTplQuestionIndex])
+	if question == "" || answer == "" {
+		return i18n.Translate(ctx, i18nkey.KeyQuestionOrAnswerEmptyPleaseFill)
+	}
+
+	if _, ok := questions.Load(question); ok {
+		logx.I(context.Background(), "checkRow|question:%s", question)
+		return i18n.Translate(ctx, i18nkey.KeyQAKnowledgeBaseDuplicateCorpus, question)
+	}
+	questions.Store(question, i)
+	// 检查问题描述
+	if len(row) >= docEntity.ExcelTplQuestionDescIndex+1 {
+		questionDesc := strings.TrimSpace(row[docEntity.ExcelTplQuestionDescIndex])
+		if err := s.qaLogic.CheckQuestionDesc(ctx, questionDesc); err != nil {
+			return errx.Msg(err)
+		}
+	}
+	// 检查相似问
+	if len(row) >= docEntity.ExcelTplSimilarQuestionIndex+1 {
+		simQuestions := strings.TrimSpace(row[docEntity.ExcelTplSimilarQuestionIndex])
+		sqs := stringx.SplitAndRemoveEmpty(simQuestions, "\n")
+		if len(sqs) > 0 {
+			if _, err := s.qaLogic.CheckSimilarQuestionNumLimit(ctx, len(sqs), 0, 0); err != nil {
+				return i18n.Translate(ctx, i18nkey.KeyQAKnowledgeBaseInfo, question, errx.Msg(err))
+			}
+			if _, _, err := s.qaLogic.CheckSimilarQuestionContent(ctx, question, sqs); err != nil {
+				return i18n.Translate(ctx, i18nkey.KeyQAKnowledgeBaseInfo, question, errx.Msg(err))
+			}
+			/* 增加相似问,一起判断是否重复, 不判断, 和api接口行为保持一致
+			   for _, sq := range sqs {
+			      questions[sq] = i
+			   }
+			*/
+		}
+	}
+	mdAnswer, err := util.CheckQaImgURLSafeToMD(ctx, answer, uin, appBizID, uniqueImgHost)
+	if err != nil {
+		logx.W(ctx, "ModifyQA Answer ConvertDocQaHtmlToMD err:%d", err)
+		return i18n.Translate(ctx, i18nkey.KeyQAKnowledgeBaseInfo, question, errx.Msg(err))
+	}
+	videoUrls, err := util.CheckVideoUrls(mdAnswer)
+	if err != nil {
+		return i18n.Translate(ctx, i18nkey.KeyQAKnowledgeBaseInfo, answer, errx.Msg(err))
+	}
+	for _, videoUrl := range videoUrls {
+		u, err := url.Parse(videoUrl)
+		if err != nil {
+			return i18n.Translate(ctx, i18nkey.KeyQAKnowledgeBaseInfo, answer, errx.Msg(err))
+		}
+		if u.Host != config.App().Storage.VideoDomain {
+			return i18n.Translate(ctx, i18nkey.KeyQAKnowledgeBaseInfo, answer, i18nkey.KeyExternalVideoLinksNotSupported)
+		}
+		// 去掉前面的斜线
+		path := strings.TrimPrefix(u.Path, "/")
+		objectInfo, err := s.s3.StatObject(context.Background(), path)
+		if err != nil || objectInfo == nil {
+			logx.W(context.Background(), "checkRow|StatObject:%+v err:%v", objectInfo, err)
+			return i18n.Translate(ctx, i18nkey.KeyQAKnowledgeBaseInfo, answer, i18nkey.KeyInvalidOrUnreachableVideoUrl)
+		}
+	}
+
+	// 检查时间有效期格式是否满足
+	if err := checkInDataValidity(ctx, row); err != nil {
+		return errx.Msg(err)
+	}
+	// 检查自定义参数是否满足
+	if docEntity.ExcelTplCustomParamIndex+1 > len(row) {
+		if err := s.qaLogic.CheckQuestionAndAnswer(ctx, question, answer); err != nil {
+			return errx.Msg(err)
+		}
+		return ""
+	}
+	customParam := strings.TrimSpace(row[docEntity.ExcelTplCustomParamIndex])
+	questionDesc := strings.TrimSpace(row[docEntity.ExcelTplQuestionDescIndex])
+	if err := s.qaLogic.CheckQAAndDescAndParam(ctx, question, answer, questionDesc, customParam); err != nil {
+		return errx.Msg(err)
+	}
+	return ""
+}
+
+func (s *Service) newDoc(ctx context.Context, req *pb.SaveDocReq, app *entity.App,
+	corpID, staffID, expireStart, expireEnd, enableScope, fileSize uint64,
+	auditFlag uint32, size int, cateId uint64) *docEntity.Doc {
 	isDownloadable := false
-	if req.GetIsRefer() && req.GetReferUrlType() == model.ReferURLTypePreview {
+	if req.GetIsRefer() && req.GetReferUrlType() == docEntity.ReferURLTypePreview {
 		isDownloadable = req.GetIsDownload()
 	}
 	// 计算下次更新时间
 	nextUpdateTime := time.Unix(0, 0).Add(8 * time.Hour)
-	if req.GetSource() == model.SourceFromTxDoc && req.GetUpdatePeriodInfo().GetUpdatePeriodH() != 0 {
+	if req.GetSource() == docEntity.SourceFromTxDoc && req.GetUpdatePeriodInfo().GetUpdatePeriodH() != 0 {
 		nextUpdateTime = logicDoc.GetDocNextUpdateTime(ctx, req.GetUpdatePeriodInfo().GetUpdatePeriodH())
 	}
-	doc := &model.Doc{
-		BusinessID:          s.dao.GenerateSeqID(),
-		RobotID:             app.ID,
+	doc := &docEntity.Doc{
+		BusinessID:          idgen.GetId(),
+		RobotID:             app.PrimaryId,
 		CorpID:              corpID,
 		StaffID:             staffID,
 		FileName:            req.GetFileName(),
 		FileType:            req.GetFileType(),
 		FileSize:            fileSize,
 		CosURL:              req.GetCosUrl(),
-		Bucket:              s.dao.GetBucket(ctx),
+		Bucket:              s.s3.GetBucket(ctx),
 		CosHash:             req.GetCosHash(),
-		Status:              model.DocStatusParseIng,
-		IsDeleted:           model.DocIsNotDeleted,
+		Status:              docEntity.DocStatusParseIng,
+		IsDeleted:           false,
 		Source:              req.GetSource(),
 		WebURL:              req.GetWebUrl(),
 		AuditFlag:           auditFlag,
 		CharSize:            uint64(size),
-		NextAction:          model.DocNextActionAdd,
+		NextAction:          docEntity.DocNextActionAdd,
 		IsRefer:             req.GetIsRefer(),
 		AttrRange:           req.GetAttrRange(),
 		ReferURLType:        req.GetReferUrlType(),
@@ -610,10 +794,11 @@ func (s *Service) newDoc(ctx context.Context, req *pb.SaveDocReq, app *model.App
 		UpdatePeriodH:       req.GetUpdatePeriodInfo().GetUpdatePeriodH(),
 		NextUpdateTime:      nextUpdateTime,
 		SplitRule:           req.GetSplitRule(),
+		EnableScope:         uint32(enableScope),
 	}
-	//if req.GetSource() == model.SourceFromTxDoc && req.GetUpdatePeriodInfo().GetUpdatePeriodH() != 0 {
+	// if req.GetSource() == model.SourceFromTxDoc && req.GetUpdatePeriodInfo().GetUpdatePeriodH() != 0 {
 	//	doc.NextUpdateTime = nextUpdateTime
-	//}
+	// }
 	for _, attrFlag := range req.GetAttributeFlags() {
 		doc.AddAttributeFlag([]uint64{uint64(math.Pow(2, float64(attrFlag)))})
 	}
@@ -622,18 +807,19 @@ func (s *Service) newDoc(ctx context.Context, req *pb.SaveDocReq, app *model.App
 
 func (s *Service) getSaveDocOpt(req *pb.SaveDocReq) uint32 {
 	// 兼容历史数据，保证如果不是xlsx文件格式，是文档导入类型
-	if req.Opt == model.DocOptNormal && req.FileType != "xlsx" {
-		return model.DocOptDocImport
+	if req.Opt == docEntity.DocOptNormal && (req.FileType != docEntity.FileTypeXlsx &&
+		req.FileType != docEntity.FileTypeNumbers) {
+		return docEntity.DocOptDocImport
 	}
 	return req.Opt
 }
 
-func (s *Service) checkDocXlsxCharSize(ctx context.Context, req *pb.SaveDocReq, app *model.App, fileSize uint64) (int,
+func (s *Service) checkDocXlsxCharSize(ctx context.Context, req *pb.SaveDocReq, app *entity.App, fileSize uint64) (int,
 	error) {
 	if fileSize > config.App().RobotDefault.MaxFileSize {
 		return 0, errs.ErrFileSizeTooBig
 	}
-	objectInfo, err := s.dao.StatObject(ctx, req.GetCosUrl())
+	objectInfo, err := s.s3.StatObject(ctx, req.GetCosUrl())
 	if err != nil || objectInfo == nil {
 		return 0, errs.ErrSystem
 	}
@@ -641,15 +827,23 @@ func (s *Service) checkDocXlsxCharSize(ctx context.Context, req *pb.SaveDocReq, 
 		return 0, errs.ErrFileSizeTooBig
 	}
 	// 如果是xlsx，但是是文档导入，不计算大小
-	if strings.ToLower(req.GetFileType()) != model.FileTypeXlsx || req.Opt == model.DocOptDocImport {
+	if (strings.ToLower(req.GetFileType()) != docEntity.FileTypeXlsx &&
+		strings.ToLower(req.GetFileType()) != docEntity.FileTypeNumbers) ||
+		req.Opt == docEntity.DocOptDocImport {
 		return 0, nil
 	}
+	// 以下是问答导入流程
 	size, err := s.parseDocXlsxCharSize(ctx, req.GetFileName(), req.GetCosUrl(), req.GetFileType())
 	if err != nil {
 		return 0, err
 	}
-
-	if err := CheckIsCharSizeExceeded(ctx, s.dao, app.BusinessID, app.CorpID, int64(size)); err != nil {
+	if err = s.financeLogic.CheckKnowledgeBaseQuota(ctx, finance.CheckQuotaReq{
+		App:                  app,
+		NewCharSize:          uint64(size),
+		NewKnowledgeCapacity: fileSize,
+		NewStorageCapacity:   gox.IfElse(req.GetSource() == docEntity.SourceFromCorpCOSDoc, 0, fileSize),
+		NewComputeCapacity:   fileSize,
+	}); err != nil {
 		return size, err
 	}
 	return size, nil
@@ -660,8 +854,8 @@ func (s *Service) parseDocXlsxCharSize(ctx context.Context, fileName, cosURL, fi
 	var size int
 	var err error
 	go func() {
-		defer errors.PanicHandler()
-		charSize, charErr := s.dao.ParseDocXlsxCharSize(ctx, fileName, cosURL, fileType)
+		defer gox.Recover()
+		charSize, charErr := s.docLogic.ParseDocXlsxCharSize(ctx, fileName, cosURL, fileType)
 		size = charSize
 		err = charErr
 		close(done)
@@ -677,47 +871,30 @@ func (s *Service) parseDocXlsxCharSize(ctx context.Context, fileName, cosURL, fi
 	return size, nil
 }
 
-func (s *Service) getAuditFlag(fileType string) (uint32, error) {
-	if !config.FileAuditSwitch() {
-		return model.AuditFlagNoNeed, nil
-	}
-	return util.GetAuditFlag(fileType)
-}
-
 // DeleteDoc 删除文档
 func (s *Service) DeleteDoc(ctx context.Context, req *pb.DeleteDocReq) (*pb.DeleteDocRsp, error) {
-	log.InfoContextf(ctx, "DeleteDoc Req:%+v", req)
+	logx.I(ctx, "DeleteDoc Req:%+v", req)
 	rsp := new(pb.DeleteDocRsp)
-	var err error
 	if len(req.GetDocBizIds()) == 0 && len(req.GetIds()) == 0 {
 		return rsp, errs.ErrWrapf(errs.ErrParameterInvalid, i18n.Translate(ctx, i18nkey.KeyDocumentIDCountZero))
 	}
-	limit := utilConfig.GetMainConfig().BatchInterfaceLimit.DeleteDocMaxLimit
+	limit := config.GetMainConfig().BatchInterfaceLimit.DeleteDocMaxLimit
 	if limit > 0 && (len(req.GetIds()) > limit || len(req.GetDocBizIds()) > limit) {
 		return rsp, errs.ErrWrapf(errs.ErrParameterInvalid, i18n.Translate(ctx, i18nkey.KeyDocumentIDCountExceedLimit), limit)
 	}
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
-	if err != nil {
-		return nil, err
-	}
-	app, err := s.getAppByAppBizID(ctx, botBizID)
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
 	if err != nil {
 		return rsp, errs.ErrRobotNotFound
 	}
-	corpID := pkg.CorpID(ctx)
-	releaseCount, err := logicDoc.GetDocReleaseCount(ctx, corpID, app.ID)
-	if err != nil {
-		return rsp, errs.ErrGetReleaseFail
-	}
 	ids := slicex.Unique(req.GetIds())
 	bizIds := slicex.Unique(req.GetDocBizIds())
-	var docs map[uint64]*model.Doc
+	var docs map[uint64]*docEntity.Doc
 	if len(ids) > 0 {
 		reqIDs, err := util.CheckReqSliceUint64(ctx, ids)
 		if err != nil {
 			return nil, err
 		}
-		docs, err = s.dao.GetDocByIDs(ctx, reqIDs, app.ID)
+		docs, err = s.docLogic.GetDocByIDs(ctx, reqIDs, app.PrimaryId)
 		if err != nil {
 			return rsp, errs.ErrDocNotFound
 		}
@@ -726,7 +903,7 @@ func (s *Service) DeleteDoc(ctx context.Context, req *pb.DeleteDocReq) (*pb.Dele
 		if err != nil {
 			return nil, err
 		}
-		docs, err = s.dao.GetDocByBizIDs(ctx, bizIDReq, app.ID)
+		docs, err = s.docLogic.GetDocByBizIDs(ctx, bizIDReq, app.PrimaryId)
 		if err != nil {
 			return rsp, errs.ErrDocNotFound
 		}
@@ -738,48 +915,40 @@ func (s *Service) DeleteDoc(ctx context.Context, req *pb.DeleteDocReq) (*pb.Dele
 		docBizIds = append(docBizIds, doc.BusinessID)
 	}
 	err = logicCommon.LockByBizIds(ctx, s.dao, dao.LockForModifyOrDeleteDoc, 2*time.Second, docBizIds)
-	defer logicCommon.UnlockByBizIds(ctx, s.dao, dao.LockForModifyOrDeleteDoc, docBizIds)
+	defer logicCommon.UnlockByBizIds(trpc.CloneContext(ctx), s.dao, dao.LockForModifyOrDeleteDoc, docBizIds)
 	if err != nil {
 		return rsp, errs.ErrDocIsModifyingOrDeleting
 	}
-	log.InfoContextf(ctx, "DeleteDoc getAppByAppBizID ok, app:%+v", app)
+	logx.I(ctx, "DeleteDoc getAppByAppBizID ok, app:%+v", app)
 	if err = app.IsWriteable(); err != nil {
 		return rsp, err
 	}
-	staffID, corpID := pkg.StaffID(ctx), pkg.CorpID(ctx)
-	log.InfoContextf(ctx, "DeleteDoc staffID:%v, corpID:%v", staffID, corpID)
-	corp, err := s.dao.GetCorpByID(ctx, corpID)
+	staffID, corpID := contextx.Metadata(ctx).StaffID(), contextx.Metadata(ctx).CorpID()
+	logx.I(ctx, "DeleteDoc staffID:%v, corpID:%v", staffID, corpID)
+	corp, err := s.rpc.PlatformAdmin.DescribeCorpByPrimaryId(ctx, corpID)
+	// corp, err := s.dao.GetCorpByID(ctx, corpID)
 	if err != nil {
-		log.ErrorContextf(ctx, "GetCorpByID err: %+v", err)
+		logx.E(ctx, "GetCorpByID err: %+v", err)
 		return rsp, err
 	}
-	// 是否在评测模式
-	if err := s.isInTestMode(ctx, corpID, app.ID, nil); err != nil {
-		return rsp, err
-	}
-	notDeletedDocs := make([]*model.Doc, 0, len(docs))
+	notDeletedDocs := make([]*docEntity.Doc, 0, len(docs))
 	notDeletedDocBizIDs := make([]uint64, 0)
 	docIds := make([]uint64, 0, len(docs))
 	for _, doc := range docs {
 		docIds = append(docIds, doc.ID)
 	}
 	// 检查文档是否在发布中
-	releasingDocIdMap, err := logicDoc.GetReleasingDocId(ctx, app.ID, docIds)
+	releasingDocIdMap, err := s.docLogic.GetReleasingDocId(ctx, app.PrimaryId, docIds)
 	if err != nil {
-		log.ErrorContextf(ctx, "获取发布中的文档失败 err:%+v", err)
+		logx.E(ctx, "获取发布中的文档失败 err:%+v", err)
 		return rsp, errs.ErrSystem
 	}
 	for _, doc := range docs {
-		if doc.CorpID != corpID || doc.RobotID != app.ID {
+		if doc.CorpID != corpID || doc.RobotID != app.PrimaryId {
 			return rsp, errs.ErrPermissionDenied
 		}
 		if doc.HasDeleted() {
 			continue
-		}
-		if !app.IsShared && doc.Status == model.DocStatusReleaseSuccess && releaseCount >= int64(config.App().
-			RobotDefault.
-			DocReleaseMaxLimit) {
-			return rsp, errs.ErrReleaseMaxCount
 		}
 		if _, ok := releasingDocIdMap[doc.ID]; ok {
 			return rsp, errs.ErrDocIsRelease
@@ -787,7 +956,7 @@ func (s *Service) DeleteDoc(ctx context.Context, req *pb.DeleteDocReq) (*pb.Dele
 		if !doc.IsAllowDelete() {
 			return rsp, errs.ErrDocForbidDelete
 		}
-		if doc.IsProcessing([]uint64{model.DocProcessingFlagHandlingDocDiffTask}) {
+		if doc.IsProcessing([]uint64{docEntity.DocProcessingFlagHandlingDocDiffTask}) {
 			return rsp, errs.ErrDocDiffTaskRunIng
 		}
 		notDeletedDocs = append(notDeletedDocs, doc)
@@ -796,29 +965,26 @@ func (s *Service) DeleteDoc(ctx context.Context, req *pb.DeleteDocReq) (*pb.Dele
 	if len(notDeletedDocs) == 0 {
 		return rsp, nil
 	}
-	if err = s.dao.DeleteDocs(ctx, staffID, app.BusinessID, notDeletedDocs); err != nil {
+	if err = s.docLogic.DeleteDocs(ctx, staffID, app.PrimaryId, app.BizId, notDeletedDocs); err != nil {
 		return nil, errs.ErrSystem
 	}
-	err = doc_diff_task.InvalidDocDiffTask(ctx, corp.BusinessID, app.BusinessID, notDeletedDocBizIDs)
+	err = s.taskLogic.InvalidDocDiffTask(ctx, corp.GetCorpId(), app.BizId, notDeletedDocBizIDs)
 	if err != nil {
 		// 更新对比任务失败不影响文档的删除流程
-		log.WarnContextf(ctx, "DeleteDoc|InvalidDocDiffTask|err:%+v", err)
+		logx.W(ctx, "DeleteDoc|InvalidDocDiffTask|err:%+v", err)
 	}
-
-	_ = s.dao.AddOperationLog(ctx, model.DocEventDel, corpID, app.GetAppID(), req, rsp, nil, nil)
+	for _, doc := range notDeletedDocs {
+		auditx.Delete(auditx.BizDocument).App(app.BizId).Space(app.SpaceId).Log(ctx, doc.BusinessID, doc.FileName)
+	}
 	return rsp, nil
 }
 
 // CheckDocReferWorkFlow 检查文档引用的工作流
 func (s *Service) CheckDocReferWorkFlow(ctx context.Context, req *pb.CheckDocReferWorkFlowReq) (
 	*pb.CheckDocReferWorkFlowRsp, error) {
-	log.InfoContextf(ctx, "CheckDocReferWorkFlow Req:%+v", req)
+	logx.I(ctx, "CheckDocReferWorkFlow Req:%+v", req)
 	rsp := new(pb.CheckDocReferWorkFlowRsp)
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
-	if err != nil {
-		return nil, err
-	}
-	app, err := s.getAppByAppBizID(ctx, botBizID)
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
 	if err != nil {
 		return rsp, errs.ErrSystem
 	}
@@ -829,19 +995,51 @@ func (s *Service) CheckDocReferWorkFlow(ctx context.Context, req *pb.CheckDocRef
 	if err != nil {
 		return nil, err
 	}
-	log.InfoContextf(ctx, "CheckDocReferWorkFlow|docBizIds:%+v", docBizIds)
-	workFlowList, err := logicDoc.GetWorkflowListByDoc(ctx, req)
+	logx.I(ctx, "CheckDocReferWorkFlow|docBizIds:%+v", docBizIds)
+	workFlowList, err := s.docLogic.GetWorkflowListByDoc(ctx, req)
 	if err != nil {
 		return rsp, err
 	}
-	log.DebugContextf(ctx, "CheckDocReferWorkFlow|workFlowList:%+v", workFlowList)
+	logx.D(ctx, "CheckDocReferWorkFlow|workFlowList:%+v", workFlowList)
 	rsp.List = workFlowList
 	return rsp, nil
 }
 
+// CheckWebDocIsMulti 检查网页文档是否多层级
+func (s *Service) CheckWebDocIsMulti(ctx context.Context, req *pb.CheckWebDocIsMultiReq) (
+	*pb.CheckWebDocIsMultiRsp, error) {
+	logx.I(ctx, "CheckWebDocIsMulti Req:%+v", req)
+	rsp := new(pb.CheckWebDocIsMultiRsp)
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetAppBizId())
+	if err != nil {
+		return rsp, errs.ErrSystem
+	}
+	if app == nil {
+		return rsp, errs.ErrRobotNotFound
+	}
+	docBizId, err := util.CheckReqParamsIsUint64(ctx, req.GetDocBizId())
+	if err != nil {
+		return nil, err
+	}
+	if docBizId == 0 {
+		return nil, errs.ErrParamsNotExpected
+	}
+
+	requestID := trace.SpanContextFromContext(ctx).TraceID().String()
+	isMulti, err := s.docLogic.GetWebDocIsMult(ctx, requestID, req.GetAppBizId(), req.GetDocBizId())
+	if err != nil {
+		logx.W(ctx, "获取网页文档元数据失败 err:%+v", err)
+		return rsp, nil
+	}
+
+	logx.D(ctx, "GetWebDocIsMult|isMulti:%+v", isMulti)
+	rsp.IsMulti = isMulti
+	return rsp, nil
+}
+
 func (s *Service) getPendingDoc(ctx context.Context, robotID uint64) (map[uint64]struct{}, error) {
-	corpID := pkg.CorpID(ctx)
-	latestRelease, err := s.dao.GetLatestRelease(ctx, corpID, robotID)
+	corpID := contextx.Metadata(ctx).CorpID()
+	latestRelease, err := s.releaseLogic.GetLatestRelease(ctx, corpID, robotID)
 	if err != nil {
 		return nil, err
 	}
@@ -851,7 +1049,7 @@ func (s *Service) getPendingDoc(ctx context.Context, robotID uint64) (map[uint64
 	if latestRelease.IsPublishDone() {
 		return nil, nil
 	}
-	releaseDocs, err := s.dao.GetReleaseDoc(ctx, latestRelease)
+	releaseDocs, err := s.releaseLogic.GetReleaseDoc(ctx, latestRelease)
 	if err != nil {
 		return nil, err
 	}
@@ -861,62 +1059,52 @@ func (s *Service) getPendingDoc(ctx context.Context, robotID uint64) (map[uint64
 // ReferDoc 是否引用文档链接
 func (s *Service) ReferDoc(ctx context.Context, req *pb.ReferDocReq) (*pb.ReferDocRsp, error) {
 	rsp := new(pb.ReferDocRsp)
-	app, err := s.getAppByAppBizID(ctx, req.GetBotBizId())
+	app, err := s.DescribeAppAndCheckCorp(ctx, convx.Uint64ToString(req.GetBotBizId()))
 	if err != nil {
 		return rsp, errs.ErrRobotNotFound
 	}
-	var doc *model.Doc
-	if isExistUInt64(req.DocId) {
-		doc, err = s.dao.GetDocByID(ctx, req.GetDocId(), app.ID)
+	var doc *docEntity.Doc
+	if req.DocId > 0 {
+		doc, err = s.docLogic.GetDocByID(ctx, req.GetDocId(), app.PrimaryId)
 	} else {
-		doc, err = s.dao.GetDocByBizID(ctx, req.GetDocBizId(), app.ID)
+		doc, err = s.docLogic.GetDocByBizID(ctx, req.GetDocBizId(), app.PrimaryId)
 	}
 	if err != nil || doc == nil {
 		return rsp, errs.ErrDocNotFound
 	}
-	corpID := pkg.CorpID(ctx)
-	if doc.CorpID != corpID || doc.RobotID != app.ID {
+	if doc.CorpID != app.CorpPrimaryId || doc.RobotID != app.PrimaryId {
 		return rsp, errs.ErrPermissionDenied
 	}
-	if doc.IsDeleted == model.DocIsDeleted {
+	if doc.IsDeleted {
 		return rsp, errs.ErrDocHasDeleted
 	}
 	if !doc.IsAllowRefer() {
 		return rsp, errs.ErrForbidRefer
 	}
-	referAfter := &model.Doc{
-		ID:      req.GetDocId(),
-		IsRefer: req.GetIsRefer(),
+	referAfter := &docEntity.Doc{
+		ID:         doc.ID,
+		BusinessID: doc.BusinessID,
+		RobotID:    app.PrimaryId,
+		CorpID:     doc.CorpID,
+		StaffID:    doc.StaffID,
+		IsRefer:    req.GetIsRefer(),
 	}
-	err = s.dao.ReferDoc(ctx, referAfter)
+	err = s.docLogic.ReferDoc(ctx, referAfter)
 	if err != nil {
 		return rsp, errs.ErrSystem
 	}
-	referBefore := &model.Doc{
-		ID:      doc.ID,
-		IsRefer: doc.IsRefer,
-	}
-	_ = s.dao.AddOperationLog(ctx, model.DocEventRefer, corpID, app.GetAppID(), req, rsp, referBefore, referAfter)
 	return rsp, nil
 }
 
 // GenerateQA 开始/重新生成QA
 func (s *Service) GenerateQA(ctx context.Context, req *pb.GenerateQAReq) (*pb.GenerateQARsp, error) {
-	log.InfoContextf(ctx, "GenerateQA Req:%+v", req)
+	logx.I(ctx, "GenerateQA Req:%+v", req)
 	rsp := new(pb.GenerateQARsp)
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
-	if err != nil {
-		return nil, err
-	}
-	app, err := s.getAppByAppBizID(ctx, botBizID)
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
 	if err != nil {
 		return rsp, errs.ErrRobotNotFound
 	}
 	if err = app.IsWriteable(); err != nil {
-		return rsp, err
-	}
-	corpID := pkg.CorpID(ctx)
-	if err := s.isInTestMode(ctx, corpID, app.ID, nil); err != nil {
 		return rsp, err
 	}
 	if len(req.GetDocBizIds()) > config.App().DocQA.GenerateQALimit {
@@ -926,7 +1114,7 @@ func (s *Service) GenerateQA(ctx context.Context, req *pb.GenerateQAReq) (*pb.Ge
 	if err != nil {
 		return nil, err
 	}
-	docs, err := s.dao.GetDocByBizIDs(ctx, docBizIDs, app.ID)
+	docs, err := s.docLogic.GetDocByBizIDs(ctx, docBizIDs, app.PrimaryId)
 	if err != nil {
 		return rsp, errs.ErrSystem
 	}
@@ -938,13 +1126,13 @@ func (s *Service) GenerateQA(ctx context.Context, req *pb.GenerateQAReq) (*pb.Ge
 		docIds = append(docIds, doc.ID)
 	}
 	// 检查文档是否在发布中
-	releasingDocIdMap, err := logicDoc.GetReleasingDocId(ctx, app.ID, docIds)
+	releasingDocIdMap, err := s.docLogic.GetReleasingDocId(ctx, app.PrimaryId, docIds)
 	if err != nil {
-		log.ErrorContextf(ctx, "获取发布中的文档失败 err:%+v", err)
+		logx.E(ctx, "获取发布中的文档失败 err:%+v", err)
 		return rsp, errs.ErrSystem
 	}
 	for _, doc := range docs {
-		if doc.CorpID != corpID || doc.RobotID != app.ID {
+		if doc.CorpID != app.CorpPrimaryId || doc.RobotID != app.PrimaryId {
 			return rsp, errs.ErrPermissionDenied
 		}
 		if doc.HasDeleted() {
@@ -962,95 +1150,82 @@ func (s *Service) GenerateQA(ctx context.Context, req *pb.GenerateQAReq) (*pb.Ge
 		if _, ok := releasingDocIdMap[doc.ID]; ok {
 			return rsp, errs.ErrDocIsRelease
 		}
-		if doc.IsProcessing([]uint64{model.DocProcessingFlagHandlingDocDiffTask}) {
+		if doc.IsProcessing([]uint64{docEntity.DocProcessingFlagHandlingDocDiffTask}) {
 			return rsp, errs.ErrDocDiffTaskRunIng
 		}
-		generating, err := s.dao.GetDocQATaskGenerating(ctx, corpID, app.ID, doc.ID)
+		generating, err := s.taskLogic.GetDocQATaskGenerating(ctx, app.CorpPrimaryId, app.PrimaryId, doc.ID)
 		if err != nil {
-			log.ErrorContextf(ctx, "GenerateQA|GetDocQATaskGenerating|查询文档是否有进行中任务失败 err:%+v", err)
+			logx.E(ctx, "GenerateQA|GetDocQATaskGenerating|查询文档是否有进行中任务失败 err:%+v", err)
 			return rsp, err
 		}
 		if generating {
-			log.InfoContextf(ctx, "GenerateQA|GetDocQATaskGenerating|文档已有正在进行中任务|%v|doc|%v",
+			logx.I(ctx, "GenerateQA|GetDocQATaskGenerating|文档已有正在进行中任务|%v|doc|%v",
 				generating, doc)
 			return rsp, errs.ErrGeneratingFail
 		}
 	}
-	qaTask := &model.DocQATask{
-		CorpID:  corpID,
-		RobotID: app.ID,
+	qaTask := &qaEntity.DocQATask{
+		CorpID:  app.CorpPrimaryId,
+		RobotID: app.PrimaryId,
 	}
-	staffID := pkg.StaffID(ctx)
-	if err = s.dao.GenerateQA(ctx, staffID, mapx.Values(docs), qaTask, app.BusinessID); err != nil {
+	staffID := contextx.Metadata(ctx).StaffID()
+	if err = s.taskLogic.GenerateQA(ctx, staffID, mapx.Values(docs), qaTask); err != nil {
 		return rsp, errs.ErrSystem
 	}
 	return rsp, nil
 }
 
-// GetSelectDoc Deprecate 获取文档下拉列表
-func (s *Service) GetSelectDoc(ctx context.Context, req *pb.GetSelectDocReq) (*pb.GetSelectDocRsp, error) {
-	log.ErrorContextf(ctx, "准备删除的接口收到了请求 deprecated interface req:%+v", req)
-	rsp := &pb.GetSelectDocRsp{}
-	return rsp, nil
-}
-
 // ListSelectDoc 获取文档下拉列表
 func (s *Service) ListSelectDoc(ctx context.Context, req *pb.ListSelectDocReq) (*pb.ListSelectDocRsp, error) {
-	log.InfoContextf(ctx, "ListSelectDoc Req:%+v", req)
+	logx.I(ctx, "ListSelectDoc Req:%+v", req)
 	rsp := new(pb.ListSelectDocRsp)
-	corpID := pkg.CorpID(ctx)
-	corp, err := s.dao.GetCorpByID(ctx, corpID)
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
+	if err != nil {
+		return rsp, errs.ErrRobotNotFound
+	}
+	corp, err := s.rpc.PlatformAdmin.DescribeCorpByPrimaryId(ctx, app.CorpPrimaryId)
+	// corp, err := s.dao.GetCorpByID(ctx, app.CorpPrimaryId)
 	if err != nil {
 		return rsp, errs.ErrCorpNotFound
 	}
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
-	if err != nil {
-		return nil, err
-	}
-	if knowClient.IsVipApp(corp.Uin, botBizID) {
+	if config.IsVipApp(corp.GetUin(), app.BizId) {
 		// TODO: 该接口后续需要优化，支持百万级文档的超大应用
 		return rsp, nil
-	}
-	app, err := s.getAppByAppBizID(ctx, botBizID)
-	if err != nil {
-		return rsp, errs.ErrRobotNotFound
 	}
 	validityStatus, status, err := s.getDocExpireStatus(req.GetStatus(), app.IsShared)
 	if err != nil {
 		return nil, err
 	}
-	fileTypes := []string{model.FileTypeDocx, model.FileTypeMD, model.FileTypeTxt, model.FileTypePdf,
-		model.FileTypePptx, model.FileTypePpt, model.FileTypeDoc, model.FileTypePng, model.FileTypeJpg,
-		model.FileTypeJpeg, model.FileTypeWps, model.FileTypePPsx, model.FileTypeTiff, model.FileTypeBmp,
-		model.FileTypeGif, model.FileTypeHtml, model.FileTypeMhtml}
-	total, _, err := s.dao.GetDocList(ctx, &model.DocListReq{
-		CorpID:         corpID,
-		RobotID:        app.ID,
-		FileName:       req.GetFileName(),
-		QueryType:      model.DocQueryTypeFileName,
-		FileTypes:      fileTypes,
-		Page:           1,
-		PageSize:       1,
-		Status:         status,
-		ValidityStatus: validityStatus,
-	})
+	fileTypes := []string{docEntity.FileTypeDocx, docEntity.FileTypeMD, docEntity.FileTypeTxt, docEntity.FileTypePdf,
+		docEntity.FileTypePptx, docEntity.FileTypePpt, docEntity.FileTypeDoc, docEntity.FileTypePng,
+		docEntity.FileTypeJpg, docEntity.FileTypeNumbers, docEntity.FileTypePages, docEntity.FileTypeKeyNote,
+		docEntity.FileTypeJpeg, docEntity.FileTypeWps, docEntity.FileTypePPsx, docEntity.FileTypeTiff,
+		docEntity.FileTypeBmp,
+		docEntity.FileTypeGif, docEntity.FileTypeHtml, docEntity.FileTypeMhtml}
+
+	offset, limit := utilx.Page(req.GetPageNumber(), req.GetPageSize(), 200)
+	docFilter := &docEntity.DocFilter{
+		CorpId:  app.CorpPrimaryId,
+		RobotId: app.PrimaryId,
+		// FileNameOrAuditName:             listReq.FileName,
+		// QueryType:                       listReq.QueryType,
+		FileNameSubStrOrAuditNameSubStr: req.GetFileName(),
+		FileTypes:                       fileTypes,
+		ValidityStatus:                  validityStatus,
+		Status:                          status,
+		Offset:                          offset,
+		Limit:                           limit,
+	}
+
+	total, err := s.docLogic.GetDocCount(ctx, docEntity.DocTblColList, docFilter)
 	if err != nil {
 		return rsp, errs.ErrSystem
 	}
 	if total == 0 {
 		return rsp, nil
 	}
-	_, list, err := s.dao.GetDocList(ctx, &model.DocListReq{
-		CorpID:         corpID,
-		RobotID:        app.ID,
-		FileName:       req.GetFileName(),
-		QueryType:      model.DocQueryTypeFileName,
-		FileTypes:      fileTypes,
-		Page:           1,
-		PageSize:       uint32(total),
-		Status:         status,
-		ValidityStatus: validityStatus,
-	})
+	docFilter.Offset, docFilter.Limit = utilx.Page(1, total)
+	list, err := s.docLogic.GetDocList(ctx, docEntity.DocTblColList, docFilter)
 	if err != nil {
 		return rsp, errs.ErrSystem
 	}
@@ -1068,17 +1243,19 @@ func (s *Service) ListSelectDoc(ctx context.Context, req *pb.ListSelectDocReq) (
 
 // FetchURLContent 抓取网页内容
 func (s *Service) FetchURLContent(ctx context.Context, req *pb.FetchURLContentReq) (*pb.FetchURLContentRsp, error) {
-	botBizID, fetchURL := req.GetBotBizId(), strings.TrimSpace(req.GetUrl())
-	log.DebugContextf(ctx, "botBizID:%d, fetchURL(%s)", botBizID, fetchURL)
+	botBizID := convx.Uint64ToString(req.GetBotBizId())
+	fetchURL := strings.TrimSpace(req.GetUrl())
+	logx.D(ctx, "botBizID:%d, fetchURL(%s)", botBizID, fetchURL)
 	rsp := new(pb.FetchURLContentRsp)
-	if _, err := s.getAppByAppBizID(ctx, botBizID); err != nil {
+	app, err := s.DescribeAppAndCheckCorp(ctx, botBizID)
+	if err != nil {
 		return rsp, errs.ErrRobotNotFound
 	}
 
 	// 调用底座解析服务
-	if utilConfig.GetMainConfig().FetchURLUseWebParser {
-		requestID := trace.SpanContextFromContext(ctx).TraceID().String()
-		title, content, err := s.dao.FetURLContent(ctx, requestID, botBizID, fetchURL)
+	if config.GetMainConfig().FetchURLUseWebParser {
+		requestID := contextx.TraceID(ctx)
+		title, content, err := s.docLogic.FetURLContent(ctx, requestID, app.BizId, fetchURL)
 		if err != nil {
 			return rsp, err
 		}
@@ -1090,41 +1267,41 @@ func (s *Service) FetchURLContent(ctx context.Context, req *pb.FetchURLContentRe
 	// 使用安全http请求
 	parsedURL, err := url.Parse(fetchURL)
 	if err != nil {
-		log.ErrorContextf(ctx, "校验url失败:url(%s) , err(%v)", fetchURL, err)
+		logx.E(ctx, "校验url失败:url(%s) , err(%v)", fetchURL, err)
 		return rsp, errs.ErrInvalidURL
 	}
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		log.ErrorContextf(ctx, "Invalid Scheme: url(%s) , err(%v)", fetchURL, err)
+		logx.E(ctx, "Invalid Scheme: url(%s) , err(%v)", fetchURL, err)
 		return rsp, errs.ErrInvalidURL
 	}
 	safeClient := secapi.NewSafeClient()
 	httpReq, err := http.NewRequest("GET", fetchURL, nil)
 	if err != nil {
-		log.ErrorContextf(ctx, "http.NewRequest fail: url(%s), err(%v)", fetchURL, err)
+		logx.E(ctx, "http.NewRequest fail: url(%s), err(%v)", fetchURL, err)
 		return rsp, errs.ErrInvalidURL
 	}
 	// 基于安全请求的客户端，发起安全请求
 	httpRsp, err := safeClient.Do(httpReq)
 	if err != nil {
-		log.ErrorContextf(ctx, "safeClient.Do fail: url(%s), err(%v)", fetchURL, err)
+		logx.E(ctx, "safeClient.Do fail: url(%s), err(%v)", fetchURL, err)
 		return rsp, errs.ErrFetchURLFail
 	}
 	if httpRsp.StatusCode != 200 {
-		log.ErrorContextf(ctx, "抓取内容失败:url:%s statusCode:%d", fetchURL, httpRsp.StatusCode)
+		logx.E(ctx, "抓取内容失败:url:%s statusCode:%d", fetchURL, httpRsp.StatusCode)
 		return rsp, errs.ErrFetchURLFail
 	}
 	by, err := io.ReadAll(httpRsp.Body)
 	if err != nil {
-		log.ErrorContextf(ctx, "io.ReadAll fail:url(%s)  err(%v)", fetchURL, err)
+		logx.E(ctx, "io.ReadAll fail:url(%s)  err(%v)", fetchURL, err)
 		return rsp, errs.ErrInvalidURL
 	}
 	html := string(by)
 	if html == "" {
-		log.ErrorContextf(ctx, "抓取内容为空 url(%v)", fetchURL)
+		logx.E(ctx, "抓取内容为空 url(%v)", fetchURL)
 		return rsp, errs.ErrFetchURLFail
 	}
 	if len(html) > 2*1024*1024 {
-		log.ErrorContextf(ctx, "抓取内容过长 url(%v)", fetchURL)
+		logx.E(ctx, "抓取内容过长 url(%v)", fetchURL)
 		return rsp, errs.ErrFetchURLTooBig
 	}
 	rsp.Title, err = getTitle(ctx, html)
@@ -1142,14 +1319,14 @@ func readability(ctx context.Context, pageURL *url.URL, html string) (content st
 	p := rd.NewParser()
 	doc, err := p.Parse(strings.NewReader(html), pageURL)
 	if err != nil {
-		log.ErrorContextf(ctx, "readability p.Parse err %v", err)
+		logx.E(ctx, "readability p.Parse err %v", err)
 		return "", err
 	}
 
 	converter := md.NewConverter("", true, nil)
 	md, err := converter.ConvertString(doc.Content)
 	if err != nil {
-		log.ErrorContextf(ctx, "readability converter.ConvertString err %v", err)
+		logx.E(ctx, "readability converter.ConvertString err %v", err)
 		return "", err
 	}
 
@@ -1159,7 +1336,7 @@ func readability(ctx context.Context, pageURL *url.URL, html string) (content st
 func getTitle(ctx context.Context, html string) (string, error) {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
 	if err != nil {
-		log.ErrorContextf(ctx, "getTitle err %v", err)
+		logx.E(ctx, "getTitle err %v", err)
 		return "", err
 	}
 	var title string
@@ -1190,18 +1367,13 @@ func getTitle(ctx context.Context, html string) (string, error) {
 	if len(title) == 0 {
 		title = "未命名网页"
 	}
-	return string(pkg.ToUTF8([]byte(title))), nil
+	return stringx.ToUTF8(title), nil
 }
 
 // DescribeDoc 获取文档详情
 func (s *Service) DescribeDoc(ctx context.Context, req *pb.DescribeDocReq) (*pb.DescribeDocRsp, error) {
-	log.InfoContextf(ctx, "DescribeDoc Req:%+v", req)
-	corpID := pkg.CorpID(ctx)
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
-	if err != nil {
-		return nil, err
-	}
-	app, err := s.getAppByAppBizID(ctx, botBizID)
+	logx.I(ctx, "DescribeDoc Req:%+v", req)
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
 	if err != nil {
 		return nil, errs.ErrRobotNotFound
 	}
@@ -1209,44 +1381,54 @@ func (s *Service) DescribeDoc(ctx context.Context, req *pb.DescribeDocReq) (*pb.
 	if err != nil {
 		return nil, err
 	}
-	doc, err := logicDoc.GetDocByBizID(ctx, corpID, app.ID, docBizID, dao.DocTblColList)
+	doc, err := s.docLogic.GetDocByBizIDAndAppID(ctx, app.CorpPrimaryId, app.PrimaryId, docBizID, docEntity.DocTblColList)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errs.ErrDocNotFound
 		}
 		return nil, errs.ErrSystem
 	}
-	qaNums, err := s.dao.GetDocQANum(ctx, corpID, app.ID, []uint64{doc.ID})
+	qaNums, err := s.qaLogic.GetDocQANum(ctx, app.CorpPrimaryId, app.PrimaryId, []uint64{doc.ID})
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
 	// 检查文档是否在发布中
-	releasingDocIdMap, err := logicDoc.GetReleasingDocId(ctx, app.ID, []uint64{doc.ID})
+	releasingDocIdMap, err := s.docLogic.GetReleasingDocId(ctx, app.PrimaryId, []uint64{doc.ID})
 	if err != nil {
-		log.ErrorContextf(ctx, "获取发布中的文档失败 err:%+v", err)
+		logx.E(ctx, "获取发布中的文档失败 err:%+v", err)
 		return nil, errs.ErrSystem
 	}
-	latestRelease, err := s.dao.GetLatestRelease(ctx, corpID, app.ID)
+	latestRelease, err := s.releaseLogic.GetLatestRelease(ctx, app.CorpPrimaryId, app.PrimaryId)
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
-	mapDocID2AttrLabels, err := s.dao.GetDocAttributeLabelDetail(ctx, app.ID, []uint64{doc.ID})
+	mapDocID2AttrLabels, err := s.labelLogic.GetDocAttributeLabelDetail(ctx, app.PrimaryId, []uint64{doc.ID})
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
 	_, isReleasing := releasingDocIdMap[doc.ID]
-	cate, err := s.dao.GetCateByID(ctx, model.DocCate, uint64(doc.CategoryID), doc.CorpID, doc.RobotID)
+	cateList, err := s.cateLogic.DescribeCateList(ctx, cateEntity.DocCate, doc.CorpID, doc.RobotID)
 	if err != nil {
+		return nil, errs.ErrSystem
+	}
+	tree := category.BuildCateTree(cateList)
+	cateNamePath, cateBizIdPath := tree.Path(ctx, uint64(doc.CategoryID))
+	logx.D(ctx, "get cate path--docBizId:%d, cateNamePath:%+v, cateBizIdPath:%+v", doc.BusinessID, cateNamePath, cateBizIdPath)
+	cateBizId := uint64(0)
+	if len(cateBizIdPath) > 0 {
+		cateBizId = cateBizIdPath[len(cateBizIdPath)-1]
+	} else {
 		return nil, errs.ErrCateNotFound
 	}
-
+	cateNamePath = append([]string{i18n.Translate(ctx, category.AllCateName)}, cateNamePath...)
+	cateBizIdPath = append([]uint64{category.AllCateID}, cateBizIdPath...)
 	updatePeriodH := doc.UpdatePeriodH
-	if doc.Source == model.SourceFromWeb {
+	if doc.Source == docEntity.SourceFromWeb {
 		requestID := trace.SpanContextFromContext(ctx).TraceID().String()
-		updatePeriodH, err = s.dao.GetDocUpdateFrequency(ctx, requestID, req.GetBotBizId(), req.GetDocBizId())
+		updatePeriodH, err = s.docLogic.GetDocUpdateFrequency(ctx, requestID, req.GetBotBizId(), req.GetDocBizId())
 		if err != nil {
-			log.WarnContextf(ctx, "获取网页文档更新频率失败 err:%+v", err)
-			//return nil, errs.ErrSystem
+			logx.W(ctx, "获取网页文档更新频率失败 err:%+v", err)
+			// return nil, errs.ErrSystem
 			// 降级处理,下游接口失败不影响 获取文档详情其他内容
 		}
 	}
@@ -1261,12 +1443,12 @@ func (s *Service) DescribeDoc(ctx context.Context, req *pb.DescribeDocReq) (*pb.
 		StatusDesc:          i18n.Translate(ctx, doc.StatusDesc(latestRelease.IsPublishPause())),
 		FileType:            doc.FileType,
 		IsRefer:             doc.IsRefer,
-		QaNum:               qaNums[doc.ID][model.QAIsNotDeleted],
+		QaNum:               qaNums[doc.ID][qaEntity.QAIsNotDeleted],
 		IsDeleted:           doc.HasDeleted(),
 		Source:              doc.Source,
 		SourceDesc:          doc.DocSourceDesc(),
 		IsAllowRestart:      !isReleasing && doc.IsAllowCreateQA(),
-		IsDeletedQa:         qaNums[doc.ID][model.QAIsNotDeleted] == 0 && qaNums[doc.ID][model.QAIsDeleted] != 0,
+		IsDeletedQa:         qaNums[doc.ID][qaEntity.QAIsNotDeleted] == 0 && qaNums[doc.ID][qaEntity.QAIsDeleted] != 0,
 		IsCreatingQa:        doc.IsCreatingQaV1(),
 		IsAllowDelete:       !isReleasing && doc.IsAllowDelete(),
 		IsAllowRefer:        doc.IsAllowRefer(),
@@ -1275,83 +1457,94 @@ func (s *Service) DescribeDoc(ctx context.Context, req *pb.DescribeDocReq) (*pb.
 		IsAllowEdit:         !isReleasing && doc.IsAllowEdit(),
 		AttrRange:           doc.AttrRange,
 		AttrLabels:          fillPBAttrLabels(mapDocID2AttrLabels[doc.ID]),
-		CateBizId:           cate.BusinessID,
+		CateBizId:           cateBizId,
 		CustomerKnowledgeId: doc.CustomerKnowledgeId,
-		IsDisabled:          doc.IsDisable(),
+		IsDisabled:          false, // 知识库概念统一后该字段已废弃
 		IsDownload:          doc.IsDownloadable,
 		SplitRule:           doc.SplitRule,
 		UpdatePeriodInfo:    &pb.UpdatePeriodInfo{UpdatePeriodH: updatePeriodH},
+		CateBizIdPath:       cateBizIdPath,
+		CateNamePath:        cateNamePath,
+		EnableScope:         pb.RetrievalEnableScope(doc.EnableScope),
 	}
 	if doc.FileNameInAudit != "" {
 		pbDoc.FileName = doc.FileNameInAudit
 	}
-	for k, v := range model.AttributeFlagMap {
+	for k, v := range docEntity.AttributeFlagMap {
 		if doc.HasAttributeFlag(k) {
 			pbDoc.AttributeFlags = append(pbDoc.AttributeFlags, v)
 		}
+	}
+	if pbDoc.Status == docEntity.DocStatusWaitRelease || pbDoc.Status == docEntity.DocStatusReleaseSuccess {
+		// 所有的待发布和已发布状态都变为导入成功
+		pbDoc.StatusDesc = i18n.Translate(ctx, i18nkey.KeyImportComplete)
 	}
 	return pbDoc, nil
 }
 
 // DescribeDocs 批量获取文档详情
 func (s *Service) DescribeDocs(ctx context.Context, req *pb.DescribeDocsReq) (*pb.DescribeDocsRsp, error) {
-	log.InfoContextf(ctx, "DescribeDocs Req:%+v", req)
-	corpID := pkg.CorpID(ctx)
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
-	if err != nil {
-		return nil, err
-	}
-	app, err := s.getAppByAppBizID(ctx, botBizID)
-	if err != nil {
+	logx.I(ctx, "DescribeDocs Req:%+v", req)
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
+	if err != nil || app == nil {
 		return nil, errs.ErrRobotNotFound
 	}
 	docBizIDs, err := util.BatchCheckReqParamsIsUint64(ctx, req.GetDocBizIds())
 	if err != nil {
 		return nil, err
 	}
-	if len(docBizIDs) > utilConfig.GetMainConfig().BatchInterfaceLimit.GeneralMaxLimit {
+	if len(docBizIDs) > config.GetMainConfig().BatchInterfaceLimit.GeneralMaxLimit {
 		return nil, errs.ErrDescribeDocLimit
 	}
-	docs, err := s.dao.GetDocByBizIDs(ctx, docBizIDs, app.ID)
+	docs, err := s.docLogic.GetDocByBizIDs(ctx, docBizIDs, app.PrimaryId)
 	if err != nil || len(docs) == 0 {
 		return nil, errs.ErrDocNotFound
+	}
+	// 校验文档的CorpID是否与应用的CorpID一致
+	for _, doc := range docs {
+		if app.CorpPrimaryId != doc.CorpID {
+			logx.W(ctx, "DescribeDocs|doc not belong to app|appCorpID:%d|docCorpID:%d|docBizID:%d",
+				app.CorpPrimaryId, doc.CorpID, doc.BusinessID)
+			return nil, errs.ErrPermissionDenied
+		}
 	}
 	docIDs, cateIDs := make([]uint64, 0, len(docs)), make([]uint64, 0, len(docs))
 	for _, doc := range docs {
 		docIDs = append(docIDs, doc.ID)
 		cateIDs = append(cateIDs, uint64(doc.CategoryID))
 	}
-	qaNums, err := s.dao.GetDocQANum(ctx, corpID, app.ID, docIDs)
+	qaNums, err := s.qaLogic.GetDocQANum(ctx, app.CorpPrimaryId, app.PrimaryId, docIDs)
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
 	// 检查文档是否在发布中
-	releasingDocIdMap, err := logicDoc.GetReleasingDocId(ctx, app.ID, docIDs)
+	releasingDocIdMap, err := s.docLogic.GetReleasingDocId(ctx, app.PrimaryId, docIDs)
 	if err != nil {
-		log.ErrorContextf(ctx, "获取发布中的文档失败 err:%+v", err)
+		logx.E(ctx, "获取发布中的文档失败 err:%+v", err)
 		return nil, errs.ErrSystem
 	}
-	latestRelease, err := s.dao.GetLatestRelease(ctx, corpID, app.ID)
-	if err != nil {
-		return nil, errs.ErrSystem
-	}
-	mapDocID2AttrLabels, err := s.dao.GetDocAttributeLabelDetail(ctx, app.ID, docIDs)
+	latestRelease, err := s.releaseLogic.GetLatestRelease(ctx, app.CorpPrimaryId, app.PrimaryId)
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
-	cateMap, err := s.dao.GetCateByIDs(ctx, model.DocCate, cateIDs)
+	mapDocID2AttrLabels, err := s.labelLogic.GetDocAttributeLabelDetail(ctx, app.PrimaryId, docIDs)
+	if err != nil {
+		return nil, errs.ErrSystem
+	}
+	cateMap, err := s.cateLogic.DescribeCateByIDs(ctx, cateEntity.DocCate, cateIDs)
 	if err != nil {
 		return nil, errs.ErrCateNotFound
 	}
 
-	docDetails := getDocDetails(docs, qaNums, releasingDocIdMap, latestRelease, mapDocID2AttrLabels, cateMap)
+	docDetails := s.getDocDetails(ctx, docs, qaNums, releasingDocIdMap, latestRelease, mapDocID2AttrLabels, cateMap)
 	return &pb.DescribeDocsRsp{Docs: docDetails}, nil
 }
 
 // getDocDetails 获取文档详情
-func getDocDetails(docs map[uint64]*model.Doc, qaNums map[uint64]map[uint32]uint32,
-	pendingDoc map[uint64]struct{}, latestRelease *model.Release, mapDocID2AttrLabels map[uint64][]*model.AttrLabel,
-	cateMap map[uint64]*model.CateInfo) []*pb.DescribeDocsRsp_DocDetail {
+func (s *Service) getDocDetails(ctx context.Context, docs map[uint64]*docEntity.Doc, qaNums map[uint64]map[uint32]uint32,
+	pendingDoc map[uint64]struct{}, latestRelease *releaseEntity.Release,
+	mapDocID2AttrLabels map[uint64][]*labelEntity.AttrLabel,
+	cateMap map[uint64]*cateEntity.CateInfo) []*pb.DescribeDocsRsp_DocDetail {
 	docDetails := make([]*pb.DescribeDocsRsp_DocDetail, 0)
 	for _, doc := range docs {
 		_, ok := pendingDoc[doc.ID]
@@ -1365,12 +1558,12 @@ func getDocDetails(docs map[uint64]*model.Doc, qaNums map[uint64]map[uint32]uint
 			StatusDesc:     doc.StatusDesc(latestRelease.IsPublishPause()),
 			FileType:       doc.FileType,
 			IsRefer:        doc.IsRefer,
-			QaNum:          qaNums[doc.ID][model.QAIsNotDeleted],
+			QaNum:          qaNums[doc.ID][qaEntity.QAIsNotDeleted],
 			IsDeleted:      doc.HasDeleted(),
 			Source:         doc.Source,
 			SourceDesc:     doc.DocSourceDesc(),
 			IsAllowRestart: !ok && doc.IsAllowCreateQA(),
-			IsDeletedQa:    qaNums[doc.ID][model.QAIsNotDeleted] == 0 && qaNums[doc.ID][model.QAIsDeleted] != 0,
+			IsDeletedQa:    qaNums[doc.ID][qaEntity.QAIsNotDeleted] == 0 && qaNums[doc.ID][qaEntity.QAIsDeleted] != 0,
 			IsCreatingQa:   doc.IsCreatingQaV1(),
 			IsAllowDelete:  !ok && doc.IsAllowDelete(),
 			IsAllowRefer:   doc.IsAllowRefer(),
@@ -1379,6 +1572,7 @@ func getDocDetails(docs map[uint64]*model.Doc, qaNums map[uint64]map[uint32]uint
 			IsAllowEdit:    !ok && doc.IsAllowEdit(),
 			AttrRange:      doc.AttrRange,
 			AttrLabels:     fillPBAttrLabels(mapDocID2AttrLabels[doc.ID]),
+			ReferUrl:       s.referURL(ctx, doc),
 		}
 		if cate, ok := cateMap[uint64(doc.CategoryID)]; ok {
 			if cate != nil {
@@ -1390,9 +1584,40 @@ func getDocDetails(docs map[uint64]*model.Doc, qaNums map[uint64]map[uint32]uint
 	return docDetails
 }
 
+// referURL 获取引用链接地址
+func (s *Service) referURL(ctx context.Context, d *docEntity.Doc) string {
+	if d == nil {
+		return ""
+	}
+
+	// 未开启【展示参考来源】
+	if !d.IsReferOpen() {
+		return ""
+	}
+
+	// 用户自定义 URL
+	if d.ReferURLType == docEntity.ReferURLTypeUserDefined {
+		return d.WebURL
+	}
+
+	// 网页导入的原始链接
+	if d.Source == docEntity.SourceFromWeb && d.ReferURLType == docEntity.ReferURLTypeWebDocURL {
+		return d.OriginalURL
+	}
+
+	// 文档预览链接（ADP COS 链接）
+	signURL, err := s.s3.GetPreSignedURLWithTypeKey(ctx, entity.OfflineStorageTypeKey, d.CosURL, 0)
+	if err != nil {
+		logx.E(ctx, "ReferURL GetPreSignedURLWithTypeKey doc:%+v err:%v", d, err)
+		return ""
+	}
+	return signURL
+}
+
 // ModifyDoc 修改文档
 func (s *Service) ModifyDoc(ctx context.Context, req *pb.ModifyDocReq) (*pb.ModifyDocRsp, error) {
-	log.InfoContextf(ctx, "ModifyDoc Req:%+v", req)
+	logx.I(ctx, "ModifyDoc Req:%+v", req)
+	staffID := contextx.Metadata(ctx).StaffID()
 	// 先加锁，防止并发修改
 	docBizId, err := util.CheckReqParamsIsUint64(ctx, req.GetDocBizId())
 	if err != nil {
@@ -1403,75 +1628,63 @@ func (s *Service) ModifyDoc(ctx context.Context, req *pb.ModifyDocReq) (*pb.Modi
 	if err != nil {
 		return nil, errs.ErrDocIsModifyingOrDeleting
 	}
-	staffID, corpID := pkg.StaffID(ctx), pkg.CorpID(ctx)
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
-	if err != nil {
-		return nil, err
-	}
 	// todo neckyang 校验拆分规则
-	app, err := s.getAppByAppBizID(ctx, botBizID)
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
 	if err != nil {
-		return nil, errs.ErrSystem
+		return nil, errs.ErrRobotNotFound
 	}
 	if err = app.IsWriteable(); err != nil {
 		return nil, err
 	}
-	if err := s.isInTestMode(ctx, corpID, app.ID, nil); err != nil {
-		return nil, err
-	}
-	releaseCount, err := logicDoc.GetDocReleaseCount(ctx, corpID, app.ID)
-	if err != nil {
-		return nil, errs.ErrGetReleaseFail
-	}
-	doc, err := s.dao.GetDocByBizID(ctx, docBizId, app.ID)
+	doc, err := s.docLogic.GetDocByBizID(ctx, docBizId, app.PrimaryId)
 	if err != nil || doc == nil {
 		return nil, errs.ErrDocNotFound
 	}
-	if err = s.isDocAllowedToModify(ctx, *doc, *app, corpID); err != nil {
+	if err = s.isDocAllowedToModify(ctx, *doc, *app, app.CorpPrimaryId); err != nil {
 		return nil, err
 	}
-	//if slices.Contains(req.GetModifyTypes(), pb.ModifyDocReq_UPDATE_TX_DOC_REFRESH) {
+	// if slices.Contains(req.GetModifyTypes(), pb.ModifyDocReq_UPDATE_TX_DOC_REFRESH) {
 	//	if doc.Source != model.SourceFromTxDoc {
-	//		return nil, errs.ErrParams
+	//		return nil, pkg.ErrParams
 	//	}
 	//	err := logicDoc.RefreshTxDoc(ctx, false, []*model.Doc{doc}, s.dao)
 	//	if err != nil {
-	//		log.ErrorContextf(ctx, "RefreshTxDoc failed, err:%v", err)
-	//		return nil, errs.ErrSystem
+	//		logx.E(ctx, "RefreshTxDoc failed, err:%v", err)
+	//		return nil, pkg.ErrSystem
 	//	}
 	//	return &pb.ModifyDocRsp{}, nil
-	//}
+	// }
 
 	if len(req.GetModifyTypes()) > 0 {
-		if err = CheckIsUsedCharSizeExceeded(ctx, s.dao, botBizID, corpID); err != nil {
-			return nil, s.dao.ConvertErrMsg(ctx, 0, app.CorpID, err)
+		if err = s.financeLogic.CheckKnowledgeBaseQuota(ctx, finance.CheckQuotaReq{App: app}); err != nil {
+			return nil, logicCommon.ConvertErrMsg(ctx, s.rpc, 0, app.CorpPrimaryId, err)
 		}
-		err = logicDoc.ModifyItemsAction(ctx, s.dao, app, doc, req)
+		err = s.docLogic.ModifyItemsAction(ctx, app, doc, req)
 		if err != nil {
-			log.ErrorContextf(ctx, "ModifyItemsAction failed, err:%v", err)
+			logx.E(ctx, "ModifyItemsAction failed, err:%v", err)
 			return nil, err
 		}
+		auditx.Modify(auditx.BizDocument).App(app.BizId).Space(app.SpaceId).Log(ctx, doc.BusinessID, doc.GetDocFileName())
 		return &pb.ModifyDocRsp{}, nil
 	}
 
 	if len(req.GetAttrLabels()) > 0 {
-		req.AttrRange = model.AttrRangeCondition
+		req.AttrRange = docEntity.AttrRangeCondition
 	} else {
-		req.AttrRange = model.AttrRangeAll
+		req.AttrRange = docEntity.AttrRangeAll
 	}
-	attrs, labels, err := s.checkAttributeLabelRefer(ctx, app.ID, config.App().AttributeLabel.DocAttrLimit,
+	attrs, labels, err := s.checkAttributeLabelRefer(ctx, app.PrimaryId, config.App().AttributeLabel.DocAttrLimit,
 		config.App().AttributeLabel.DocAttrLabelLimit, req.GetAttrRange(), req.GetAttrLabels())
 	if err != nil {
 		return nil, err
 	}
-	isDocAttributeLabelChange, err := s.isDocAttributeLabelChange(ctx, app.ID, doc.ID, doc.AttrRange,
+	isDocAttributeLabelChange, err := s.labelLogic.IsDocAttributeLabelChange(ctx, app.PrimaryId, doc.ID, doc.AttrRange,
 		req.GetAttrRange(), req.GetAttrLabels())
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
-	oldDoc := doc
 	isNeedPublish := false
-	if isDocAttributeLabelChange || doc.Status == model.DocStatusUpdateFail {
+	if isDocAttributeLabelChange || doc.Status == docEntity.DocStatusUpdateFail {
 		isNeedPublish = true
 	}
 	expireStart, expireEnd, err := util.CheckReqStartEndTime(ctx, req.GetExpireStart(), req.GetExpireEnd())
@@ -1483,10 +1696,10 @@ func (s *Service) ModifyDoc(ctx context.Context, req *pb.ModifyDocReq) (*pb.Modi
 		isNeedPublish = true
 	}
 	if isNeedPublish {
-		doc.Status = model.DocStatusUpdating
+		doc.Status = docEntity.DocStatusUpdating
 	}
 	if isNeedPublish && !doc.IsNextActionAdd() {
-		doc.NextAction = model.DocNextActionUpdate
+		doc.NextAction = docEntity.DocNextActionUpdate
 	}
 	doc.IsRefer = req.GetIsRefer()
 	doc.AttrRange = req.GetAttrRange()
@@ -1502,7 +1715,7 @@ func (s *Service) ModifyDoc(ctx context.Context, req *pb.ModifyDocReq) (*pb.Modi
 		doc.AddAttributeFlag([]uint64{uint64(math.Pow(2, float64(attrFlag)))})
 	}
 	doc.IsDownloadable = false
-	if req.GetIsRefer() && req.GetReferUrlType() == model.ReferURLTypePreview {
+	if req.GetIsRefer() && req.GetReferUrlType() == docEntity.ReferURLTypePreview {
 		doc.IsDownloadable = req.GetIsDownload()
 	}
 	if req.GetSplitRule() != "" {
@@ -1514,14 +1727,14 @@ func (s *Service) ModifyDoc(ctx context.Context, req *pb.ModifyDocReq) (*pb.Modi
 	}
 
 	var cateID uint64
-	if req.GetCateBizId() != "" {
+	if req.GetCateBizId() != "" && req.GetCateBizId() != "0" {
 		catBizID, err := util.CheckReqParamsIsUint64(ctx, req.GetCateBizId())
 		if err != nil {
 			return nil, err
 		}
-		cateID, err = s.dao.CheckCateBiz(ctx, model.DocCate, corpID, catBizID, app.ID)
+		cateID, err = s.cateLogic.VerifyCateBiz(ctx, cateEntity.DocCate, app.CorpPrimaryId, catBizID, app.PrimaryId)
 	} else {
-		cateID, err = s.dao.GetRobotUncategorizedCateID(ctx, model.DocCate, corpID, app.ID)
+		cateID, err = s.cateLogic.DescribeRobotUncategorizedCateID(ctx, cateEntity.DocCate, app.CorpPrimaryId, app.PrimaryId)
 	}
 	if err != nil {
 		return nil, err
@@ -1531,22 +1744,27 @@ func (s *Service) ModifyDoc(ctx context.Context, req *pb.ModifyDocReq) (*pb.Modi
 	}
 	doc.CategoryID = uint32(cateID)
 
-	if !app.IsShared && isNeedPublish && oldDoc.Status == model.DocStatusReleaseSuccess &&
-		releaseCount >= int64(config.App().RobotDefault.DocReleaseMaxLimit) {
-		return nil, errs.ErrReleaseMaxCount
+	enableScope := req.GetEnableScope()
+
+	if enableScope != pb.RetrievalEnableScope_ENABLE_SCOPE_TYPE_UNKNOWN && uint32(enableScope) != doc.EnableScope {
+		logx.I(ctx, "enableScope in req is not equals to origin doc , enable_scope changed. (%d -> %d)",
+			enableScope, doc.EnableScope)
+		doc.EnableScope = uint32(enableScope)
+		isNeedPublish = true
 	}
 
-	if err = s.dao.UpdateDoc(ctx, staffID, doc, isNeedPublish, docAttributeLabelsFromPB); err != nil {
+	if err = s.docLogic.UpdateDoc(ctx, staffID, doc, isNeedPublish, docAttributeLabelsFromPB); err != nil {
 		return nil, errs.ErrSystem
 	}
-	_ = s.dao.AddOperationLog(ctx, model.DocEventEdit, corpID, app.GetAppID(), req, nil, oldDoc, doc)
+	auditx.Modify(auditx.BizDocument).App(app.BizId).Space(app.SpaceId).Log(ctx, doc.BusinessID, doc.GetDocFileName())
 	return &pb.ModifyDocRsp{}, nil
 }
 
 // BatchModifyDoc 批量修改文档应用链接，过期时间
 func (s *Service) BatchModifyDoc(ctx context.Context, req *pb.BatchModifyDocReq) (*pb.BatchModifyDocRsp, error) {
-	log.InfoContextf(ctx, "BatchModifyDoc Req:%+v", req)
+	logx.I(ctx, "BatchModifyDoc Req:%+v", req)
 	rsp := new(pb.BatchModifyDocRsp)
+	staffID := contextx.Metadata(ctx).StaffID()
 	// 先加锁，防止并发修改
 	docBizIds, err := util.CheckReqSliceUint64(ctx, req.GetDocBizIds())
 	if err != nil {
@@ -1559,27 +1777,20 @@ func (s *Service) BatchModifyDoc(ctx context.Context, req *pb.BatchModifyDocReq)
 		return rsp, errs.ErrDocIsModifyingOrDeleting
 	}
 
-	staffID, corpID := pkg.StaffID(ctx), pkg.CorpID(ctx)
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
 	if err != nil {
-		return nil, err
+		return rsp, errs.ErrRobotNotFound
 	}
-
-	app, err := s.getAppByAppBizID(ctx, botBizID)
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
 	if err = app.IsWriteable(); err != nil {
-		log.ErrorContextf(ctx, "BatchModifyDoc app.IsWriteable, err:%v", err)
+		logx.E(ctx, "BatchModifyDoc app.IsWriteable, err:%v", err)
 		return nil, err
 	}
-	if err := s.isInTestMode(ctx, corpID, app.ID, nil); err != nil {
-		log.ErrorContextf(ctx, "BatchModifyDoc app.isInTestMode, err:%v", err)
-		return nil, err
-	}
-	docs, err := s.dao.GetDocByBizIDs(ctx, docBizIds, app.ID)
+	docs, err := s.docLogic.GetDocByBizIDs(ctx, docBizIds, app.PrimaryId)
 	if err != nil {
-		log.ErrorContextf(ctx, "BatchModifyDoc GetDocByBusinessIDs, err:%v", err)
+		logx.E(ctx, "BatchModifyDoc GetDocByBusinessIDs, err:%v", err)
 		return nil, errs.ErrSystem
 	}
 	if len(docs) == 0 {
@@ -1590,9 +1801,9 @@ func (s *Service) BatchModifyDoc(ctx context.Context, req *pb.BatchModifyDocReq)
 		docIds = append(docIds, doc.ID)
 	}
 	// 检查文档是否在发布中
-	releasingDocIdMap, err := logicDoc.GetReleasingDocId(ctx, app.ID, docIds)
+	releasingDocIdMap, err := s.docLogic.GetReleasingDocId(ctx, app.PrimaryId, docIds)
 	if err != nil {
-		log.ErrorContextf(ctx, "获取发布中的文档失败 err:%+v", err)
+		logx.E(ctx, "获取发布中的文档失败 err:%+v", err)
 		return nil, errs.ErrSystem
 	}
 
@@ -1606,20 +1817,16 @@ func (s *Service) BatchModifyDoc(ctx context.Context, req *pb.BatchModifyDocReq)
 	if expireEnd > 0 && time.Unix(int64(expireEnd), 0).Before(time.Now()) {
 		return nil, errs.ErrInvalidExpireTime
 	}
-	releaseCount, err := logicDoc.GetDocReleaseCount(ctx, corpID, app.ID)
-	if err != nil {
-		return rsp, errs.ErrGetReleaseFail
-	}
 	// 打开关闭应用链接不需要发布；修改适用范围；自定义到期时间需要发布
 	isNeedUpdateMap := make(map[uint64]int)
-	var changedDoc []*model.Doc
+	var changedDoc []*docEntity.Doc
 	for _, doc := range docs {
-		if doc.Status == model.DocStatusCharExceeded {
+		if doc.Status == docEntity.DocStatusCharExceeded {
 			return rsp, errs.ErrDocNotAllowEdit
 		}
-		if doc.CorpID != corpID || doc.RobotID != app.ID {
-			log.InfoContextf(ctx, "BatchModifyDoc doc permission Denied! docInfo:%+v,corpID:%+v,robotID:%+v", doc,
-				corpID, app.ID)
+		if doc.CorpID != app.CorpPrimaryId || doc.RobotID != app.PrimaryId {
+			logx.I(ctx, "BatchModifyDoc doc permission Denied! docInfo:%+v,corpID:%+v,robotID:%+v", doc,
+				app.CorpPrimaryId, app.PrimaryId)
 			return rsp, errs.ErrPermissionDenied
 		}
 
@@ -1630,36 +1837,59 @@ func (s *Service) BatchModifyDoc(ctx context.Context, req *pb.BatchModifyDocReq)
 			return rsp, errs.ErrDocIsRelease
 		}
 
-		if req.GetActionType() == model.BatchModifyDefault || req.GetActionType() == model.BatchModifyRefer {
+		if req.GetActionType() == docEntity.BatchModifyDefault || req.GetActionType() == docEntity.BatchModifyRefer {
 			doc.IsRefer = req.GetIsRefer()
 			doc.ReferURLType = req.GetReferUrlType()
 			doc.WebURL = req.GetWebUrl()
 			doc.IsDownloadable = false
-			if req.GetIsRefer() && req.GetReferUrlType() == model.ReferURLTypePreview {
+			if req.GetIsRefer() && req.GetReferUrlType() == docEntity.ReferURLTypePreview {
 				doc.IsDownloadable = req.GetIsDownload()
 			}
 		}
 
-		if req.GetActionType() == model.BatchModifyDefault || req.GetActionType() == model.BatchModifyExpiredTime {
+		if req.GetActionType() == docEntity.BatchModifyDefault {
+			if !doc.IsAllowEdit() {
+				return rsp, errs.ErrDocNotAllowEdit
+			}
+			if req.GetEnableScope() != pb.RetrievalEnableScope_ENABLE_SCOPE_TYPE_UNKNOWN {
+				logx.I(ctx, "BatchModifyDoc | Modify EnableScope..")
+				if doc.EnableScope != uint32(req.GetEnableScope()) {
+					isNeedUpdateMap[doc.ID] = 1
+				}
+				doc.EnableScope = uint32(req.GetEnableScope())
+			} else {
+				logx.I(ctx, "BatchModifyDoc | Modify expireEnd..")
+				if doc.ExpireEnd.Unix() != int64(expireEnd) {
+					isNeedUpdateMap[doc.ID] = 1
+					doc.Status = docEntity.DocStatusUpdating
+					if !doc.IsNextActionAdd() {
+						doc.NextAction = docEntity.DocNextActionUpdate
+					}
+				}
+				doc.ExpireEnd = time.Unix(int64(expireEnd), 0)
+			}
+
+		}
+
+		if req.GetActionType() == docEntity.BatchModifyExpiredTime {
 			if !doc.IsAllowEdit() {
 				return rsp, errs.ErrDocNotAllowEdit
 			}
 			if doc.ExpireEnd.Unix() != int64(expireEnd) {
 				isNeedUpdateMap[doc.ID] = 1
-				doc.Status = model.DocStatusUpdating
+				doc.Status = docEntity.DocStatusUpdating
 				if !doc.IsNextActionAdd() {
-					doc.NextAction = model.DocNextActionUpdate
+					doc.NextAction = docEntity.DocNextActionUpdate
 				}
 			}
 			doc.ExpireEnd = time.Unix(int64(expireEnd), 0)
-
 		}
 
-		if req.GetActionType() == model.BatchModifyUpdatePeriod {
+		if req.GetActionType() == docEntity.BatchModifyUpdatePeriod {
 			if !doc.IsAllowEdit() {
 				return rsp, errs.ErrDocNotAllowEdit
 			}
-			if doc.Source != model.SourceFromTxDoc {
+			if doc.Source != docEntity.SourceFromTxDoc {
 				// 不是腾讯文档类型，不支持更新时间周期
 				continue
 			}
@@ -1668,38 +1898,42 @@ func (s *Service) BatchModifyDoc(ctx context.Context, req *pb.BatchModifyDocReq)
 			doc.NextUpdateTime = nextUpdateTime
 		}
 
-		if !app.IsShared && doc.Status == model.DocStatusReleaseSuccess && len(isNeedUpdateMap) > 0 &&
-			releaseCount >= int64(config.App().RobotDefault.DocReleaseMaxLimit) {
-			return rsp, errs.ErrReleaseMaxCount
-		}
-		doc.IsDownloadable = req.GetIsDownload()
 		doc.StaffID = staffID
+
+		if req.GetActionType() == docEntity.BatchModifyUpdateEnableScope {
+			if !doc.IsAllowEdit() {
+				return rsp, errs.ErrDocNotAllowEdit
+			}
+			if req.GetEnableScope() != pb.RetrievalEnableScope_ENABLE_SCOPE_TYPE_UNKNOWN {
+				if doc.EnableScope != uint32(req.GetEnableScope()) {
+					isNeedUpdateMap[doc.ID] = 1
+				}
+				doc.EnableScope = uint32(req.GetEnableScope())
+			}
+		}
+
 		changedDoc = append(changedDoc, doc)
 	}
-	if err = s.dao.BatchUpdateDoc(ctx, staffID, changedDoc, isNeedUpdateMap); err != nil {
-		log.ErrorContextf(ctx, "BatchUpdateDoc, err:%v", err)
+	if err = s.docLogic.BatchUpdateDoc(ctx, staffID, changedDoc, isNeedUpdateMap); err != nil {
+		logx.E(ctx, "BatchUpdateDoc, err:%v", err)
 		return nil, errs.ErrSystem
 	}
-	_ = s.dao.AddOperationLog(ctx, model.DocEventEdit, corpID, app.GetAppID(), req, nil, nil, nil)
+	for _, doc := range docs {
+		auditx.Modify(auditx.BizDocument).App(app.BizId).Space(app.SpaceId).Log(ctx, doc.BusinessID, doc.FileName)
+	}
 	return rsp, nil
 
 }
 
 // ModifyDocStatus 修改文档状态
 func (s *Service) ModifyDocStatus(ctx context.Context, req *pb.ModifyDocStatusReq) (*pb.ModifyDocStatusRsp, error) {
-	log.InfoContextf(ctx, "ModifyDocStatus Req:%+v", util.Object2String(req))
+	logx.I(ctx, "ModifyDocStatus Req:%s", req)
 	rsp := new(pb.ModifyDocStatusRsp)
 	if err := s.checkLogin(ctx); err != nil {
 		return nil, err
 	}
-	startID, corpID := pkg.StaffID(ctx), pkg.CorpID(ctx)
 	docBizID, err := util.CheckReqParamsIsUint64(ctx, req.GetDocBizId())
 	if err != nil {
-		return nil, err
-	}
-	appBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetAppBizId())
-	if err != nil {
-		log.ErrorContextf(ctx, "ModifyDocStatus appBizID err:%v", err)
 		return nil, err
 	}
 	err = logicCommon.LockByBizIds(ctx, s.dao, dao.LockForModifyOrDeleteDoc, 2*time.Second, []uint64{docBizID})
@@ -1707,95 +1941,108 @@ func (s *Service) ModifyDocStatus(ctx context.Context, req *pb.ModifyDocStatusRe
 	if err != nil {
 		return nil, errs.ErrDocIsModifyingOrDeleting
 	}
-	app, err := s.getAppByAppBizID(ctx, appBizID)
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetAppBizId())
 	if err != nil || app == nil {
 		return nil, errs.ErrSystem
 	}
 	if err = app.IsWriteable(); err != nil {
 		return nil, err
 	}
-	releaseCount, err := logicDoc.GetDocReleaseCount(ctx, corpID, app.ID)
-	if err != nil {
-		return rsp, errs.ErrGetReleaseFail
-	}
 
-	doc, err := s.dao.GetDocByBizID(ctx, docBizID, app.ID)
+	doc, err := s.docLogic.GetDocByBizID(ctx, docBizID, app.PrimaryId)
 	if err != nil || doc == nil {
 		return nil, errs.ErrDocNotFound
 	}
-	if err = s.isDocAllowedToModify(ctx, *doc, *app, corpID); err != nil {
+	if err = s.isDocAllowedToModify(ctx, *doc, *app, app.CorpPrimaryId); err != nil {
 		return nil, err
 	}
-	if !app.IsShared && doc.Status == model.DocStatusReleaseSuccess && releaseCount >= int64(config.App().RobotDefault.
-		DocReleaseMaxLimit) {
-		return rsp, errs.ErrReleaseMaxCount
-	}
-	log.InfoContextf(ctx, "ModifyDocStatus doc:%+v", util.Object2String(doc))
-	// 文档已经是停用状态，则不需要再更新，直接退出
-	if req.GetIsDisabled() && doc.HasAttributeFlag(model.DocAttributeFlagDisable) {
-		return nil, errs.ErrDocIsDisabled
-	}
-	// 文档已经是启用状态，则不需要再更新，直接退出
-	if !req.GetIsDisabled() && !doc.HasAttributeFlag(model.DocAttributeFlagDisable) {
-		return nil, errs.ErrDocIsEnabled
-	}
-	oldDoc := doc
+	logx.I(ctx, "ModifyDocStatus doc:%+v", jsonx.MustMarshalToString(doc))
 	isNeedPublish := true
-	doc.Status = model.DocStatusUpdating
+	doc.Status = docEntity.DocStatusUpdating
 	if isNeedPublish && !doc.IsNextActionAdd() {
-		doc.NextAction = model.DocNextActionUpdate
+		doc.NextAction = docEntity.DocNextActionUpdate
 	}
-	if err = s.dao.UpdateDocDisableState(ctx, startID, doc, req.GetIsDisabled()); err != nil {
+	staffID := contextx.Metadata(ctx).StaffID()
+	if err = s.docLogic.UpdateDocDisableState(ctx, staffID, doc, req.GetIsDisabled()); err != nil {
 		return nil, errs.ErrSystem
 	}
-	_ = s.dao.AddOperationLog(ctx, model.DocEventEdit, corpID, app.GetAppID(), req, nil, oldDoc, doc)
+	if req.GetIsDisabled() {
+		auditx.Disable(auditx.BizDocument).App(app.BizId).Space(app.SpaceId).Log(ctx, doc.BusinessID, doc.GetDocFileName())
+	} else {
+		auditx.Enable(auditx.BizDocument).App(app.BizId).Space(app.SpaceId).Log(ctx, doc.BusinessID, doc.GetDocFileName())
+	}
 	return rsp, nil
 }
 
 // GetDocPreview 获取临时链接 不用临时密钥 临时密钥有过期时间
 func (s *Service) GetDocPreview(ctx context.Context, req *pb.GetDocPreviewReq) (rsp *pb.GetDocPreviewRsp, err error) {
-	log.InfoContextf(ctx, "GetDocPreview|req:%+v", req)
+	logx.I(ctx, "GetDocPreview|req:%+v", req)
 	if err := s.checkLogin(ctx); err != nil {
-		return nil, err
-	}
-	var app *model.App
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
-	if err != nil {
 		return nil, err
 	}
 	docBizID, err := util.CheckReqParamsIsUint64(ctx, req.GetDocBizId())
 	if err != nil {
 		return nil, err
 	}
-	if req.GetTypeKey() == model.RealtimeStorageTypeKey {
-		app, err = s.getAppByAppBizID(ctx, botBizID)
+	var app *entity.App
+	if req.GetTypeKey() == entity.RealtimeStorageTypeKey {
+		app, err = s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
 		// 这里不强制校验AppID和CorpID是否强制是归属关系
 		// C侧分享链接出去的情况：当前登录的Corp和App可能不是归属关系
 		if err != nil && !errors.Is(err, errs.ErrCorpAppNotEqual) {
 			return nil, errs.ErrRobotNotFound
 		}
+		if app == nil {
+			return nil, errs.ErrRobotNotFound
+		}
 		// 指定实时文档
 		rsp, err = s.getRealtimeDocPreview(ctx, app, docBizID)
 	} else {
-		app, err = s.getAppByAppBizID(ctx, botBizID)
-		if err != nil {
-			return nil, err
+		app, err = s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
+		if err != nil && !errors.Is(err, errs.ErrCorpAppNotEqual) {
+			return nil, errs.ErrRobotNotFound
 		}
-		// 默认离线文档
-		rsp, err = s.getOfflineDocPreview(ctx, app, docBizID, req.GetBotBizId())
+		if app == nil {
+			return nil, errs.ErrRobotNotFound
+		}
+		// 先获取doc用于权限校验
+		doc, docErr := s.docLogic.GetDocByBizID(ctx, docBizID, app.PrimaryId)
+		if docErr != nil || doc == nil {
+			logx.W(ctx, "GetDocPreview|GetDocByBizID failed|docBizID:%d|err:%v", docBizID, docErr)
+			return nil, errs.ErrDocNotFound
+		}
+
+		// 文档与应用的corpid必须一致
+		if app.CorpPrimaryId != doc.CorpID {
+			logx.W(ctx, "GetDocPreview|doc not belong to app|appCorpID:%d|docCorpID:%d", app.CorpPrimaryId, doc.CorpID)
+			return nil, errs.ErrPermissionDenied
+		}
+
+		// 跨企业访问需要判断参考来源refer字段：ErrCorpAppNotEqual(B端跨企业) 或 corpID=0(C端用户)
+		loginCorpID := contextx.Metadata(ctx).CorpID()
+		if errors.Is(err, errs.ErrCorpAppNotEqual) || loginCorpID == 0 {
+			//  公开的知识库，比如应用模板场景查看示例文档，也需要放通越权校验
+			isPublicCorp := slices.Contains(config.GetMainConfig().PublicCorpPrimaryIds, app.CorpPrimaryId)
+			if !isPublicCorp && !doc.IsReferOpen() {
+				logx.W(ctx, "GetDocPreview|cross-corp access denied|appCorpID:%d", app.CorpPrimaryId)
+				return nil, errs.ErrPermissionDenied
+			}
+		}
+
+		rsp, err = s.getOfflineDocPreview(ctx, app, docBizID, req.GetBotBizId(), doc)
 	}
 	if err != nil {
 		return nil, err
 	}
-	log.InfoContextf(ctx, "GetDocPreview|rsp:%+v", rsp)
+	logx.I(ctx, "GetDocPreview|rsp:%+v", rsp)
 	return rsp, nil
 }
 
 // BatchDownloadDoc 批量下载文档
 func (s *Service) BatchDownloadDoc(ctx context.Context, req *pb.BatchDownloadDocReq) (
 	rsp *pb.BatchDownloadDocRsp, err error) {
-	log.InfoContextf(ctx, "BatchDownloadDoc|req:%+v", req)
-	corpID := pkg.CorpID(ctx)
+	logx.I(ctx, "BatchDownloadDoc|req:%+v", req)
+	corpID := contextx.Metadata(ctx).CorpID()
 	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetAppBizId())
 	if err != nil {
 		return nil, err
@@ -1807,45 +2054,51 @@ func (s *Service) BatchDownloadDoc(ctx context.Context, req *pb.BatchDownloadDoc
 	if len(docBizIDs) > config.App().RobotDefault.BatchDownloadDocMaxLimit {
 		return nil, errs.ErrBatchDownloadMaxCount
 	}
-	appInfo, err := client.GetAppInfo(ctx, botBizID, model.AppTestScenes)
+	// todo: 对 docBizIDs 做越权校验
+	// todo: BatchDownloadDoc 只会查询到当前PrimaryId下的docID,看看是否有必要做docBizIDs的越权
+
+	appDB, err := s.rpc.AppAdmin.DescribeAppById(ctx, botBizID)
 	if err != nil {
-		log.ErrorContextf(ctx, "prepareTokenDosage GetAppInfo err: %+v", err)
+		logx.E(ctx, "prepareTokenDosage GetAppInfo err: %+v", err)
 		return nil, err
 	}
-	if appInfo.IsDelete {
+	if appDB.IsDeleted {
 		return nil, errs.ErrAppNotFound
 	}
-	if appInfo.GetCorpId() != corpID {
+	if appDB.CorpPrimaryId != corpID {
 		return rsp, errs.ErrPermissionDenied
 	}
-	rsp, err = logicDoc.BatchDownloadDoc(ctx, appInfo.Id, docBizIDs, s.dao)
+	rsp, err = s.docLogic.BatchDownloadDoc(ctx, appDB.PrimaryId, docBizIDs, s.dao)
 	if err != nil {
-		log.ErrorContextf(ctx, "BatchDownloadDoc err: %+v", err)
+		logx.E(ctx, "BatchDownloadDoc err: %+v", err)
 		return nil, err
 	}
-	log.InfoContextf(ctx, "BatchDownloadDoc|rsp:%+v", rsp)
+	for _, docRsp := range rsp.DocList {
+		auditx.Download(auditx.BizDocument).App(botBizID).Space(appDB.SpaceId).Log(ctx, docRsp.DocBizId, docRsp.FileName)
+	}
+	logx.I(ctx, "BatchDownloadDoc|rsp:%+v", rsp)
 	return rsp, nil
 }
 
 // getRealtimeDocPreview 实时文档预览
-func (s *Service) getRealtimeDocPreview(ctx context.Context, app *model.App, docID uint64) (
+func (s *Service) getRealtimeDocPreview(ctx context.Context, app *entity.App, docID uint64) (
 	*pb.GetDocPreviewRsp, error) {
-	corpID := pkg.CorpID(ctx)
-	corp, err := s.getCorpByID(ctx, corpID)
-	if err != nil || corp == nil {
+	corpID := contextx.Metadata(ctx).CorpID()
+	corpBizId, err := s.getCorpByID(ctx, corpID)
+	if err != nil || corpBizId == 0 {
 		return nil, errs.ErrCorpNotFound
 	}
-	doc, err := s.dao.GetRealtimeDocByID(ctx, docID)
+	doc, err := s.docLogic.GetRealtimeDocByID(ctx, docID)
 	if err != nil || doc == nil {
 		return nil, errs.ErrDocNotFound
 	}
-	log.InfoContextf(ctx, "getRealtimeDocPreview|doc:%+v, corp:%+v", doc, corp)
-	err = s.dao.CheckURLPrefix(ctx, doc.CorpID, corp.BusinessID, app.BusinessID, doc.CosUrl)
+	logx.I(ctx, "getRealtimeDocPreview|doc:%+v, corp:%d", doc, corpBizId)
+	err = s.s3.CheckURLPrefix(ctx, doc.CorpID, corpBizId, app.BizId, doc.CosUrl)
 	if err != nil {
-		log.ErrorContextf(ctx, "getRealtimeDocPreview|CheckURLPrefix failed, err:%+v", err)
+		logx.E(ctx, "getRealtimeDocPreview|CheckURLPrefix failed, err:%+v", err)
 		return nil, errs.ErrInvalidURL
 	}
-	signURL, err := s.dao.GetPresignedURLWithTypeKey(ctx, model.RealtimeStorageTypeKey, doc.CosUrl)
+	signURL, err := s.s3.GetPreSignedURLWithTypeKey(ctx, entity.RealtimeStorageTypeKey, doc.CosUrl, 0)
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
@@ -1859,28 +2112,47 @@ func (s *Service) getRealtimeDocPreview(ctx context.Context, app *model.App, doc
 }
 
 // getOfflineDocPreview 离线文档预览
-func (s *Service) getOfflineDocPreview(ctx context.Context, app *model.App, docBizID uint64, botBizID string) (
+func (s *Service) getOfflineDocPreview(ctx context.Context, app *entity.App, docBizID uint64, botBizID string, doc *docEntity.Doc) (
 	*pb.GetDocPreviewRsp, error) {
-	doc, err := s.dao.GetDocByBizID(ctx, docBizID, app.ID)
-	if err != nil || doc == nil {
+	if app == nil {
+		return nil, errs.ErrRobotNotFound
+	}
+	if doc == nil {
 		return nil, errs.ErrDocNotFound
 	}
-	corp, err := s.dao.GetCorpByID(ctx, doc.CorpID)
+	corp, err := s.rpc.PlatformAdmin.DescribeCorpByPrimaryId(ctx, doc.CorpID)
+	// corp, err := s.dao.GetCorpByID(ctx, doc.CorpPrimaryId)
 	if err != nil || corp == nil {
 		return nil, errs.ErrCorpNotFound
 	}
-	err = s.dao.CheckURLPrefix(ctx, doc.CorpID, corp.BusinessID, app.BusinessID, doc.CosURL)
+
+	// 因为无法确认doc是默认知识库的还是共享知识库的，所以需要通过doc中的robotid去获取应用or共享知识库的bizid
+	req := &appconfig.ListAppBaseInfoReq{
+		AppPrimaryIds: []uint64{doc.RobotID},
+		PageNumber:    1,
+		PageSize:      1,
+	}
+	apps, _, err := s.rpc.AppAdmin.ListAppBaseInfo(ctx, req)
 	if err != nil {
-		log.ErrorContextf(ctx, "getOfflineDocPreview|CheckURLPrefix failed, err:%+v", err)
+		return nil, fmt.Errorf("GetAppBaseInfo err: %w", err)
+	}
+	if len(apps) == 0 {
+		return nil, errs.ErrAppNotFound
+	}
+	appBizId := apps[0].BizId
+
+	err = s.s3.CheckURLPrefix(ctx, doc.CorpID, corp.GetCorpId(), appBizId, doc.CosURL)
+	if err != nil {
+		logx.E(ctx, "getOfflineDocPreview|CheckURLPrefix failed, err:%+v", err)
 		return nil, errs.ErrInvalidURL
 	}
-	signURL, err := s.dao.GetPresignedURLWithTypeKey(ctx, model.OfflineStorageTypeKey, doc.CosURL)
+	signURL, err := s.s3.GetPreSignedURLWithTypeKey(ctx, entity.OfflineStorageTypeKey, doc.CosURL, 0)
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
-	parseUrl, err := logicDoc.GetDocParseResUrl(ctx, s.dao, doc.ID, app.ID)
+	parseUrl, err := s.docLogic.GetDocParseResUrl(ctx, doc.ID, apps[0].PrimaryId)
 	if err != nil {
-		log.ErrorContextf(ctx, "getOfflineDocPreview|GetDocParseResUrl failed, err:%+v", err)
+		logx.E(ctx, "getOfflineDocPreview|GetDocParseResUrl failed, err:%+v", err)
 		return nil, errs.ErrSystem
 	}
 	return &pb.GetDocPreviewRsp{
@@ -1905,37 +2177,37 @@ func (s *Service) getDocExpireStatus(status []uint32, isShared bool) (uint32, []
 	var newStatus []uint32
 	for i := range status {
 		switch status[i] { // 预留后续会有未生效、生效中状态
-		case model.DocStatusExpired:
-			validityStatus = model.DocExpiredStatus
-		case model.DocStatusCharExceeded:
+		case docEntity.DocStatusExpired:
+			validityStatus = docEntity.DocExpiredStatus
+		case docEntity.DocStatusCharExceeded:
 			// 超量状态扩展显示出失败稳态转超量的状态
 			newStatus = append(newStatus,
-				model.DocStatusCharExceeded,
-				model.DocStatusParseImportFailCharExceeded,
-				model.DocStatusAuditFailCharExceeded,
-				model.DocStatusUpdateFailCharExceeded,
-				model.DocStatusCreateIndexFailCharExceeded,
-				model.DocStatusAppealFailedCharExceeded)
-		case model.DocStatusWaitRelease:
-			newStatus = append(newStatus, model.DocStatusWaitRelease)
+				docEntity.DocStatusCharExceeded,
+				docEntity.DocStatusParseImportFailCharExceeded,
+				docEntity.DocStatusAuditFailCharExceeded,
+				docEntity.DocStatusUpdateFailCharExceeded,
+				docEntity.DocStatusCreateIndexFailCharExceeded,
+				docEntity.DocStatusAppealFailedCharExceeded)
+		case docEntity.DocStatusWaitRelease:
+			newStatus = append(newStatus, docEntity.DocStatusWaitRelease)
 			if isShared {
 				// 共享知识库，需要兼容从应用知识库人工转换成共享知识库的情况
-				newStatus = append(newStatus, model.DocStatusReleaseSuccess)
+				newStatus = append(newStatus, docEntity.DocStatusReleaseSuccess)
 			}
 		default:
 			newStatus = append(newStatus, status[i])
 		}
 	}
 	// 如果选择了状态，但是没有选择已过期，那就是未过期
-	if validityStatus != model.DocExpiredStatus && len(newStatus) > 0 {
-		validityStatus = model.DocUnExpiredStatus
+	if validityStatus != docEntity.DocExpiredStatus && len(newStatus) > 0 {
+		validityStatus = docEntity.DocUnExpiredStatus
 	}
 	return validityStatus, newStatus, nil
 }
 
 // checkQueryType 校验查询类型
 func (s *Service) checkQueryType(fileType string) error {
-	if fileType != model.DocQueryTypeFileName && fileType != model.DocQueryTypeAttribute {
+	if fileType != docEntity.DocQueryTypeFileName && fileType != docEntity.DocQueryTypeAttribute {
 		return errs.ErrParamsNotExpected
 	}
 	return nil
@@ -1943,13 +2215,9 @@ func (s *Service) checkQueryType(fileType string) error {
 
 // StopDocParse 终止文档解析
 func (s *Service) StopDocParse(ctx context.Context, req *pb.StopDocParseReq) (*pb.StopDocParseRsp, error) {
-	log.InfoContextf(ctx, "StopDocParse Req:%+v", req)
+	logx.I(ctx, "StopDocParse Req:%+v", req)
 	rsp := new(pb.StopDocParseRsp)
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
-	if err != nil {
-		return nil, err
-	}
-	app, err := s.getAppByAppBizID(ctx, botBizID)
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
 	if err != nil {
 		return rsp, errs.ErrSystem
 	}
@@ -1961,21 +2229,22 @@ func (s *Service) StopDocParse(ctx context.Context, req *pb.StopDocParseReq) (*p
 	if err != nil {
 		return nil, err
 	}
-	doc, err := s.dao.GetDocByBizID(ctx, docBizID, app.ID)
+	doc, err := s.docLogic.GetDocByBizID(ctx, docBizID, app.PrimaryId)
 	if err != nil {
 		return rsp, err
 	}
 	taskID := ""
-	docParse, err := s.dao.GetDocParseByDocIDAndTypeAndStatus(ctx, doc.ID, model.DocParseTaskTypeWordCount,
-		model.DocParseIng, doc.RobotID)
+	docParse, err := s.docLogic.GetDocParseByDocIDAndTypeAndStatus(ctx, doc.ID, docEntity.DocParseTaskTypeWordCount,
+		docEntity.DocParseIng, doc.RobotID)
 	if err != nil {
+		logx.W(ctx, "GetDocParseByDocIDAndTypeAndStatus failed, err: %+v", err)
 		// (兼容干预中的终止)如果文档在干预中且解析任务未找到，则直接更新文档状态
 		if errors.Is(err, errs.ErrDocParseTaskNotFound) && doc.IsProcessing([]uint64{
-			model.DocProcessingFlagSegmentIntervene}) {
-			log.WarnContextf(ctx, "GetDocParseByDocIDAndTypeAndStatus failed, err: %+v", err)
+			docEntity.DocProcessingFlagSegmentIntervene}) {
+			logx.W(ctx, "GetDocParseByDocIDAndTypeAndStatus failed, err: %+v", err)
 			doc.Message = config.App().DocParseStop.Msg
-			doc.Status = model.DocStatusParseFail
-			err = s.dao.UpdateDocStatusAndCharSize(ctx, doc)
+			doc.Status = docEntity.DocStatusParseFail
+			err = s.docLogic.UpdateDocStatusAndCharSize(ctx, doc)
 			if err != nil {
 				return rsp, err
 			}
@@ -1984,38 +2253,38 @@ func (s *Service) StopDocParse(ctx context.Context, req *pb.StopDocParseReq) (*p
 		return rsp, errs.ErrDocParseTaskNotFound
 	}
 
-	requestID := trace.SpanContextFromContext(ctx).TraceID().String()
+	requestID := contextx.TraceID(ctx)
 	taskID = docParse.TaskID
-	err = s.dao.StopDocParseTask(ctx, taskID, requestID, app.BusinessID)
+	err = s.docLogic.StopDocParseTask(ctx, taskID, requestID, app.BizId)
 	if err != nil {
 		return rsp, errs.ErrStopDocParseFail
 	}
 	doc.Message = config.App().DocParseStop.Msg
-	doc.Status = model.DocStatusParseFail
-	doc.StaffID = pkg.StaffID(ctx)
-	err = s.dao.UpdateDocStatusAndCharSize(ctx, doc)
+	doc.Status = docEntity.DocStatusParseFail
+	doc.StaffID = contextx.Metadata(ctx).StaffID()
+	err = s.docLogic.UpdateDocStatusAndCharSize(ctx, doc)
 	if err != nil {
 		return rsp, errs.ErrUpdateDocStatusFail
 	}
-	docParse.Status = model.DocParseCallBackCancel
+	docParse.Status = docEntity.DocParseCallBackCancel
 	docParse.RequestID = requestID
-	err = s.dao.UpdateDocParseTask(ctx, docParse)
+	docParse.UpdateTime = time.Now()
+
+	updateColumns := []string{docEntity.DocParseTblColStatus, docEntity.DocParseTblColRequestID,
+		docEntity.DocParseTblColUpdateTime}
+
+	err = s.docLogic.UpdateDocParseTask(ctx, updateColumns, docParse)
 	if err != nil {
 		return rsp, errs.ErrUpdateDocParseTaskStatusFail
 	}
-
 	return rsp, nil
 }
 
 // RetryDocParse 重试文档解析
 func (s *Service) RetryDocParse(ctx context.Context, req *pb.RetryDocParseReq) (*pb.RetryDocParseRsp, error) {
-	log.InfoContextf(ctx, "RetryDocParse Req:%+v", req)
+	logx.I(ctx, "RetryDocParse Req:%+v", req)
 	rsp := new(pb.RetryDocParseRsp)
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
-	if err != nil {
-		return nil, err
-	}
-	app, err := s.getAppByAppBizID(ctx, botBizID)
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
 	if err != nil {
 		return rsp, errs.ErrSystem
 	}
@@ -2026,21 +2295,10 @@ func (s *Service) RetryDocParse(ctx context.Context, req *pb.RetryDocParseReq) (
 	if err != nil {
 		return nil, err
 	}
-	limit := utilConfig.GetMainConfig().BatchInterfaceLimit.RetryDocParseMaxLimit
-	if limit > 0 && (len(req.GetDocBizIds()) > limit) {
+	limit := config.GetMainConfig().BatchInterfaceLimit.RetryDocParseMaxLimit
+	if limit > 0 && (len(docBizIDs) > limit) {
 		return rsp, errs.ErrWrapf(errs.ErrParameterInvalid,
 			i18n.Translate(ctx, i18nkey.KeyDocumentIDCountExceedLimit), limit)
-	}
-	corpID := pkg.CorpID(ctx)
-	if !app.IsShared {
-		releaseCount, err := logicDoc.GetDocReleaseCount(ctx, corpID, app.ID)
-		if err != nil {
-			return rsp, errs.ErrGetReleaseFail
-		}
-		log.InfoContextf(ctx, "RetryDocParse|releaseCount:%d", releaseCount)
-		if releaseCount >= int64(config.App().RobotDefault.DocReleaseMaxLimit) {
-			return rsp, errs.ErrReleaseMaxCount
-		}
 	}
 	// 如果批量字段为空,兼容老接口单个操作字段
 	if len(docBizIDs) == 0 {
@@ -2053,71 +2311,66 @@ func (s *Service) RetryDocParse(ctx context.Context, req *pb.RetryDocParseReq) (
 		}
 		docBizIDs = append(docBizIDs, docBizID)
 	}
-
-	if err = CheckIsUsedCharSizeExceeded(ctx, s.dao, app.BusinessID, app.CorpID); err != nil {
-		return rsp, s.dao.ConvertErrMsg(ctx, 0, app.CorpID, err)
+	if err = s.financeLogic.CheckKnowledgeBaseQuota(ctx, finance.CheckQuotaReq{App: app}); err != nil {
+		return rsp, logicCommon.ConvertErrMsg(ctx, s.rpc, 0, app.CorpPrimaryId, err)
 	}
-	//for _, docBizId := range docBizIDs {
-	//
-	//}
-	docs, err := s.dao.GetDocByBizIDs(ctx, docBizIDs, app.ID)
+	docs, err := s.docLogic.GetDocByBizIDs(ctx, docBizIDs, app.PrimaryId)
 	if err != nil {
 		return rsp, err
 	}
 
-	//docBizID, err := util.CheckReqParamsIsUint64(ctx, req.GetDocBizId())
-	//if err != nil {
-	//	return nil, err
-	//}
-	//doc, err := s.dao.GetDocByBizID(ctx, docBizID, app.ID)
-	//if err != nil {
-	//	return rsp, err
-	//}
-	var parsesDocs []*model.Doc
+	parsedDocs := make([]*docEntity.Doc, 0)
 	for _, doc := range docs {
-		parsesDocs = append(parsesDocs, doc)
+		if doc.RobotID != app.PrimaryId {
+			return rsp, errs.ErrWrapf(errs.ErrDocNotFound, "当前应用中不存在该文档")
+		}
+		parsedDocs = append(parsedDocs, doc)
 	}
-	docParsesFailMap, err := s.docParsesMap(ctx, parsesDocs)
+
+	docParsesFailMap, err := s.docParsesMap(ctx, parsedDocs)
 	if err != nil {
 		return rsp, errs.ErrDocParseTaskNotFound
 	}
-	docAuditFailMap, _ := s.docAuditMap(ctx, parsesDocs, app)
+	docAuditFailMap, _ := s.docAuditMap(ctx, parsedDocs, app)
 
+	// 获取企业信息
+	staffBizID, staffID, corpBizID := contextx.Metadata(ctx).StaffBizID(), contextx.Metadata(ctx).StaffID(), contextx.Metadata(ctx).CorpBizID()
 	successCount := 0
 	failedDocs := make([]uint64, 0)
-	for _, doc := range docs {
+	for _, doc := range parsedDocs {
 		if !s.isAllowRetry(ctx, doc.ID, doc.Status, docParsesFailMap, docAuditFailMap) {
-			log.WarnContextf(ctx, "文档当前状态不可重试解析, docBizID:%d, robotID:%d, appID:%d",
-				doc.BusinessID, doc.RobotID, app.ID)
+			logx.W(ctx, "文档当前状态不可重试解析, docBizID:%d, robotID:%d, appID:%d",
+				doc.BusinessID, doc.RobotID, app.PrimaryId)
 			failedDocs = append(failedDocs, doc.BusinessID)
 			continue
 		}
-		if doc.RobotID != app.ID {
-			log.WarnContextf(ctx, "文档不属于当前应用, docBizID:%d, robotID:%d, appID:%d",
-				doc.BusinessID, doc.RobotID, app.ID)
+		if doc.RobotID != app.PrimaryId {
+			logx.W(ctx, "文档不属于当前应用, docBizID:%d, robotID:%d, appID:%d",
+				doc.BusinessID, doc.RobotID, app.PrimaryId)
 			failedDocs = append(failedDocs, doc.BusinessID)
 			continue
-			//return rsp, errs.ErrWrapf(errs.ErrDocNotFound, i18n.Translate(ctx, i18nkey.KeyDocumentNotInCurrentApp))
+			// return rsp, errs.ErrWrapf(errs.ErrDocNotFound, i18n.Translate(ctx, i18nkey.KeyDocumentNotInCurrentApp))
 		}
-		// 获取企业信息
-		staffBizID, staffID, corpBizID, corpID := pkg.StaffBizID(ctx), pkg.StaffID(ctx), pkg.CorpBizID(ctx), pkg.CorpID(ctx)
-		docParses, err := s.dao.DocParseCanBeRetried(ctx, doc.ID, model.DocParseTaskTypeWordCount,
-			[]uint32{model.DocParseCallBackFailed, model.DocParseCallBackCancel, model.DocParseCallBackCharSizeExceeded},
+
+		docParses, err := s.docLogic.DocParseCanBeRetried(ctx, doc.ID, docEntity.DocParseTaskTypeWordCount,
+			[]uint32{docEntity.DocParseCallBackFailed, docEntity.DocParseCallBackCancel,
+				docEntity.DocParseCallBackCharSizeExceeded},
 			doc.RobotID)
 		if err != nil {
-			log.ErrorContextf(ctx, "获取可重试文档解析任务失败, docBizID:%d, err:%v", doc.BusinessID, err)
+			logx.E(ctx, "获取可重试文档解析任务失败, docBizID:%d, err:%v", doc.BusinessID, err)
 			failedDocs = append(failedDocs, doc.BusinessID)
 			continue
-			//return rsp, errs.ErrDocParseTaskFailNotFound
+			// return rsp, errs.ErrDocParseTaskFailNotFound
 		}
+
 		if len(docParses) == 0 {
 			// (兼容干预中的重试)如果文档在干预中且解析任务未找到，则重新提交干预异步任务
-			if doc.IsProcessing([]uint64{model.DocProcessingFlagSegmentIntervene}) {
+			if doc.IsProcessing([]uint64{docEntity.DocProcessingFlagSegmentIntervene}) {
 				// 获取切片数据
-				docCommon := &model.DocSegmentCommon{
-					AppID:      app.ID,
-					AppBizID:   botBizID,
-					CorpID:     corpID,
+				docCommon := &segEntity.DocSegmentCommon{
+					AppID:      app.PrimaryId,
+					AppBizID:   app.BizId,
+					CorpID:     app.CorpPrimaryId,
 					CorpBizID:  corpBizID,
 					StaffID:    staffID,
 					StaffBizID: staffBizID,
@@ -2126,180 +2379,181 @@ func (s *Service) RetryDocParse(ctx context.Context, req *pb.RetryDocParseReq) (
 					DataSource: uint32(logicDoc.GetDataSource(ctx, doc.SplitRule)),
 				}
 				// 审核
-				auditFlag, err := s.getAuditFlag(doc.FileType)
+				auditFlag, err := util.GetFileAuditFlag(doc.FileType)
 				if err != nil {
-					log.ErrorContextf(ctx, "获取审核标志失败, docBizID:%d, err:%v", doc.BusinessID, err)
+					logx.E(ctx, "获取审核标志失败, docBizID:%d, err:%v", doc.BusinessID, err)
 					failedDocs = append(failedDocs, doc.BusinessID)
 					continue
-					//return rsp, err
+					// return rsp, err
 				}
-				_, err = logicDoc.CreateDocParsingIntervention(ctx, s.dao, docCommon, auditFlag, doc)
+				_, err = s.docLogic.CreateDocParsingIntervention(ctx, docCommon, auditFlag, doc)
 				if err != nil {
-					log.ErrorContextf(ctx, "创建文档解析干预任务失败, docBizID:%d, err:%v", doc.BusinessID, err)
+					logx.E(ctx, "创建文档解析干预任务失败, docBizID:%d, err:%v", doc.BusinessID, err)
 					failedDocs = append(failedDocs, doc.BusinessID)
 					continue
-					//log.ErrorContextf(ctx, "RetryDocParse|RetryDocParse|err:%+v", err)
-					//return nil, errs.ErrRetryDocParseTaskFail
+					// logx.E(ctx, "RetryDocParse|RetryDocParse|err:%+v", err)
+					// return nil, errs.ErrRetryDocParseTaskFail
 				}
 				successCount++
 				continue
-				//return rsp, nil
+				// return rsp, nil
 			}
-			log.ErrorContextf(ctx, "未找到可重试的文档解析任务, docBizID:%d", doc.BusinessID)
+			logx.E(ctx, "未找到可重试的文档解析任务, docBizID:%d", doc.BusinessID)
 			failedDocs = append(failedDocs, doc.BusinessID)
 			continue
-			//return rsp, errs.ErrDocParseTaskFailNotFound
+			// return rsp, errs.ErrDocParseTaskFailNotFound
 		}
 		docParse := docParses[0]
-		if err = CheckIsUsedCharSizeExceeded(ctx, s.dao, app.BusinessID, app.CorpID); err != nil {
-			return rsp, s.dao.ConvertErrMsg(ctx, 0, app.CorpID, err)
+		if err = s.financeLogic.CheckKnowledgeBaseQuota(ctx, finance.CheckQuotaReq{App: app}); err != nil {
+			return rsp, logicCommon.ConvertErrMsg(ctx, s.rpc, 0, app.CorpPrimaryId, err)
 		}
-		requestID := trace.SpanContextFromContext(ctx).TraceID().String()
-		if docParse.Status == model.DocParseCallBackFailed {
-			err = s.dao.RetryDocParseTask(ctx, docParse.TaskID, requestID, app.BusinessID)
+		requestID := contextx.TraceID(ctx)
+		if docParse.Status == docEntity.DocParseCallBackFailed {
+			err = s.docLogic.RetryDocParseTask(ctx, docParse.TaskID, requestID, app.BizId)
 			if err != nil {
-				log.ErrorContextf(ctx, "重试文档解析任务失败, docBizID:%d, err:%v", doc.BusinessID, err)
+				logx.E(ctx, "重试文档解析任务失败, docBizID:%d, err:%v", doc.BusinessID, err)
 				failedDocs = append(failedDocs, doc.BusinessID)
 				continue
-				//return rsp, errs.ErrRetryDocParseTaskFail
+				// return rsp, errs.ErrRetryDocParseTaskFail
 			}
-			docParse.Status = model.DocParseIng
+			docParse.Status = docEntity.DocParseIng
 			docParse.Result = ""
 			docParse.RequestID = requestID
-			err = s.dao.UpdateDocParseTask(ctx, docParse)
+			docParse.UpdateTime = time.Now()
+			updateColumns := []string{
+				docEntity.DocTblColUpdateTime,
+				docEntity.DocParseTblColStatus,
+				docEntity.DocParseTblColResult,
+				docEntity.DocParseTblColRequestID,
+			}
+			err = s.docLogic.UpdateDocParseTask(ctx, updateColumns, docParse)
 			if err != nil {
-				log.ErrorContextf(ctx, "更新文档解析任务状态失败, docBizID:%d, err:%v", doc.BusinessID, err)
+				logx.E(ctx, "更新文档解析任务状态失败, docBizID:%d, err:%v", doc.BusinessID, err)
 				failedDocs = append(failedDocs, doc.BusinessID)
 				continue
-				//return rsp, errs.ErrUpdateDocParseTaskStatusFail
+				// return rsp, errs.ErrUpdateDocParseTaskStatusFail
 			}
-			doc.Status = model.DocStatusParseIng
-		} else if docParse.Status == model.DocParseCallBackCancel {
-			taskID, err := s.dao.SendDocParseWordCount(ctx, doc, requestID, "")
+			doc.Status = docEntity.DocStatusParseIng
+		} else if docParse.Status == docEntity.DocParseCallBackCancel {
+			taskID, err := s.docLogic.SendDocParseWordCount(ctx, doc, requestID, "")
 			if err != nil {
-				log.ErrorContextf(ctx, "发送文档字数解析任务失败, docBizID:%d, err:%v", doc.BusinessID, err)
+				logx.E(ctx, "发送文档字数解析任务失败, docBizID:%d, err:%v", doc.BusinessID, err)
 				failedDocs = append(failedDocs, doc.BusinessID)
 				continue
-				//return rsp, errs.ErrRetryDocParseTaskFail
+				// return rsp, errs.ErrRetryDocParseTaskFail
 			}
-			newDocParse := model.DocParse{
+			newDocParse := &docEntity.DocParse{
 				DocID:     doc.ID,
 				CorpID:    doc.CorpID,
 				RobotID:   doc.RobotID,
 				StaffID:   doc.StaffID,
 				RequestID: requestID,
-				Type:      model.DocParseTaskTypeWordCount,
-				OpType:    model.DocParseOpTypeWordCount,
-				Status:    model.DocParseIng,
+				Type:      docEntity.DocParseTaskTypeWordCount,
+				OpType:    docEntity.DocParseOpTypeWordCount,
+				Status:    docEntity.DocParseIng,
 				TaskID:    taskID,
 			}
-			err = s.dao.CreateDocParseTask(ctx, newDocParse)
+			err = s.docLogic.CreateDocParseTask(ctx, newDocParse)
 			if err != nil {
-				log.ErrorContextf(ctx, "创建文档解析任务失败, docBizID:%d, err:%v", doc.BusinessID, err)
+				logx.E(ctx, "创建文档解析任务失败, docBizID:%d, err:%v", doc.BusinessID, err)
 				failedDocs = append(failedDocs, doc.BusinessID)
 				continue
-				//return rsp, errs.ErrRetryDocParseTaskFail
+				// return rsp, errs.ErrRetryDocParseTaskFail
 			}
-			doc.Status = model.DocStatusParseIng
+			doc.Status = docEntity.DocStatusParseIng
 		} else {
-			docParse.Status = model.DocParseCallBackFinish
-			if err = s.dao.UpdateDocParseTask(ctx, docParse); err != nil {
-				log.ErrorContextf(ctx, "更新文档解析任务状态失败, docBizID:%d, err:%v", doc.BusinessID, err)
+			docParse.Status = docEntity.DocParseCallBackFinish
+			updateColumns := []string{docEntity.DocParseTblColStatus, docEntity.DocParseTblColUpdateTime}
+			if err = s.docLogic.UpdateDocParseTask(ctx, updateColumns, docParse); err != nil {
+				logx.E(ctx, "更新文档解析任务状态失败, docBizID:%d, err:%v", doc.BusinessID, err)
 				failedDocs = append(failedDocs, doc.BusinessID)
 				continue
-				//return rsp, errs.ErrUpdateDocParseTaskStatusFail
+				// return rsp, errs.ErrUpdateDocParseTaskStatusFail
 			}
-			if config.App().AuditSwitch {
-				doc.Status = model.DocStatusAuditIng
-				doc.AuditFlag = model.AuditFlagWait
-				if err = s.dao.CreateDocAudit(ctx, doc, docParse.SourceEnvSet); err != nil {
-					log.ErrorContextf(ctx, "创建文档审核失败, docBizID:%d, err:%v", doc.BusinessID, err)
+			if config.FileAuditSwitch() {
+				doc.Status = docEntity.DocStatusAuditIng
+				doc.AuditFlag = docEntity.AuditFlagWait
+				if err = s.docLogic.CreateDocAudit(ctx, doc, docParse.SourceEnvSet); err != nil {
+					logx.E(ctx, "创建文档审核失败, docBizID:%d, err:%v", doc.BusinessID, err)
 					failedDocs = append(failedDocs, doc.BusinessID)
 					continue
-					//return rsp, errs.ErrCreateAuditFail
+					// return rsp, errs.ErrCreateAuditFail
 				}
 			} else {
-				if err = s.dao.NoNeedAuditDoc(ctx, doc); err != nil {
-					log.ErrorContextf(ctx, "设置文档无需审核失败, docBizID:%d, err:%v", doc.BusinessID, err)
-					failedDocs = append(failedDocs, doc.BusinessID)
-					continue
-					//return rsp, err
-				}
+				doc.Status = docEntity.DocStatusCreatingIndex
+				go func(rCtx context.Context) {
+					if err = s.docLogic.DocParseSegment(rCtx, nil, doc, false); err != nil {
+						logx.E(ctx, "设置文档无需审核失败, docBizID:%d, err:%v", doc.BusinessID, err)
+						failedDocs = append(failedDocs, doc.BusinessID)
+						return
+					}
+				}(trpc.CloneContext(ctx))
 			}
 		}
+
 		doc.Message = ""
-		doc.StaffID = pkg.StaffID(ctx)
-		err = s.dao.UpdateDocStatusAndCharSize(ctx, doc)
+		doc.StaffID = contextx.Metadata(ctx).StaffID()
+		err = s.docLogic.UpdateDocStatusAndCharSize(ctx, doc)
 		if err != nil {
-			log.ErrorContextf(ctx, "更新文档状态和字符数失败, docBizID:%d, err:%v", doc.BusinessID, err)
+			logx.E(ctx, "RetryDocParse|UpdateDocStatusAndCharSize|err:%+v", err)
 			failedDocs = append(failedDocs, doc.BusinessID)
 			continue
-			//return rsp, err
+			// return rsp, err
 		}
 		successCount++
+		auditx.Recover(auditx.BizDocument).Corp(corpBizID).App(app.BizId).Space(app.SpaceId).Log(ctx, doc.BusinessID, doc.GetDocFileName())
 	}
 	if len(failedDocs) > 0 {
-		log.WarnContextf(ctx, "部分文档重试失败, 成功数:%d, 失败数:%d, 失败的文档BizIDs:%v",
+		logx.W(ctx, "Paritially DocParse Failed, SuccessCount:%d, FailedCount:%d, FailedDocBizIds:%v",
 			successCount, len(failedDocs), failedDocs)
 		if successCount == 0 {
 			return rsp, errs.ErrRetryDocParseTaskFail
 		}
 	}
-	log.InfoContextf(ctx, "文档重试解析完成, 成功数:%d, 失败数:%d", successCount, len(failedDocs))
+	logx.I(ctx, "RetryDocParse|SuccessCount:%d, FailedCount:%d", successCount, len(failedDocs))
 	return rsp, nil
 }
 
 // ModifyDocAttrRange 批量修改文档的适用范围
 func (s *Service) ModifyDocAttrRange(ctx context.Context, req *pb.ModifyDocAttrRangeReq) (*pb.ModifyDocAttrRangeRsp,
 	error) {
-	log.InfoContextf(ctx, "ModifyDocAttrRange req:%+v", req)
-	staffID, corpID := pkg.StaffID(ctx), pkg.CorpID(ctx)
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
-	if err != nil {
-		return nil, err
-	}
-	robot, err := s.getAppByAppBizID(ctx, botBizID)
+	logx.I(ctx, "ModifyDocAttrRange req:%+v", req)
+	staffID := contextx.Metadata(ctx).StaffID()
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
 	if err != nil {
 		return nil, errs.ErrSystem
-	}
-	if err := s.isInTestMode(ctx, corpID, robot.ID, nil); err != nil {
-		return nil, err
 	}
 	docBizIDs, err := util.CheckReqSliceUint64(ctx, req.GetDocBizIds())
 	if err != nil {
 		return nil, err
 	}
-	docs, err := s.dao.GetDocByBizIDs(ctx, docBizIDs, robot.ID)
+	docs, err := s.docLogic.GetDocByBizIDs(ctx, docBizIDs, app.PrimaryId)
 	if err != nil || len(docs) == 0 {
 		return nil, errs.ErrDocNotFound
-	}
-	releaseCount, err := logicDoc.GetDocReleaseCount(ctx, corpID, robot.ID)
-	if err != nil {
-		return nil, errs.ErrGetReleaseFail
 	}
 	docIds := make([]uint64, 0, len(docs))
 	for _, doc := range docs {
 		docIds = append(docIds, doc.ID)
 	}
 	// 检查文档是否在发布中
-	releasingDocIdMap, err := logicDoc.GetReleasingDocId(ctx, robot.ID, docIds)
+	releasingDocIdMap, err := s.docLogic.GetReleasingDocId(ctx, app.PrimaryId, docIds)
 	if err != nil {
-		log.ErrorContextf(ctx, "获取发布中的文档失败 err:%+v", err)
+		logx.E(ctx, "获取发布中的文档失败 err:%+v", err)
 		return nil, errs.ErrSystem
 	}
 	if len(req.GetAttrLabels()) > 0 {
-		req.AttrRange = model.AttrRangeCondition
+		req.AttrRange = docEntity.AttrRangeCondition
 	} else {
-		req.AttrRange = model.AttrRangeAll
+		req.AttrRange = docEntity.AttrRangeAll
 	}
-	attrs, labels, err := s.checkAttributeLabelRefer(ctx, robot.ID, config.App().AttributeLabel.DocAttrLimit,
+	attrs, labels, err := s.checkAttributeLabelRefer(ctx, app.PrimaryId, config.App().AttributeLabel.DocAttrLimit,
 		config.App().AttributeLabel.DocAttrLabelLimit, req.GetAttrRange(), req.GetAttrLabels())
 	if err != nil {
 		return nil, err
 	}
-	needUpdateDocs := make([]*model.Doc, 0, len(docs))
+	needUpdateDocs := make([]*docEntity.Doc, 0, len(docs))
 	for _, doc := range docs {
-		if doc.CorpID != corpID || doc.RobotID != robot.ID {
+		if doc.CorpID != app.CorpPrimaryId || doc.RobotID != app.PrimaryId {
 			return nil, errs.ErrPermissionDenied
 		}
 		if doc.HasDeleted() {
@@ -2311,20 +2565,16 @@ func (s *Service) ModifyDocAttrRange(ctx context.Context, req *pb.ModifyDocAttrR
 		if _, ok := releasingDocIdMap[doc.ID]; ok {
 			return nil, errs.ErrDocIsRelease
 		}
-		if !robot.IsShared && doc.Status == model.DocStatusReleaseSuccess &&
-			releaseCount >= int64(config.App().RobotDefault.DocReleaseMaxLimit) {
-			return nil, errs.ErrReleaseMaxCount
-		}
-		isDocAttributeLabelChange, err := s.isDocAttributeLabelChange(ctx, robot.ID, doc.ID, doc.AttrRange,
+		isDocAttributeLabelChange, err := s.labelLogic.IsDocAttributeLabelChange(ctx, app.PrimaryId, doc.ID, doc.AttrRange,
 			req.GetAttrRange(), req.GetAttrLabels())
 		if err != nil {
 			return nil, errs.ErrSystem
 		}
 		if isDocAttributeLabelChange {
 			doc.AttrRange = req.GetAttrRange()
-			doc.Status = model.DocStatusUpdating
+			doc.Status = docEntity.DocStatusUpdating
 			if !doc.IsNextActionAdd() {
-				doc.NextAction = model.DocNextActionUpdate
+				doc.NextAction = docEntity.DocNextActionUpdate
 			}
 			doc.StaffID = staffID
 			needUpdateDocs = append(needUpdateDocs, doc)
@@ -2338,22 +2588,21 @@ func (s *Service) ModifyDocAttrRange(ctx context.Context, req *pb.ModifyDocAttrR
 	if err != nil {
 		return nil, err
 	}
-	if err = s.dao.UpdateDocAttrRange(ctx, staffID, needUpdateDocs, docAttrs); err != nil {
+	if err = s.docLogic.UpdateDocAttrRange(ctx, staffID, needUpdateDocs, docAttrs); err != nil {
 		return nil, errs.ErrSystem
 	}
-	_ = s.dao.AddOperationLog(ctx, model.DocEventEdit, corpID, robot.GetAppID(), req, nil, nil, nil)
+
+	for _, doc := range needUpdateDocs {
+		auditx.Modify(auditx.BizDocument).App(app.BizId).Space(app.SpaceId).Log(ctx, doc.BusinessID, doc.GetDocFileName(), "LabelRange")
+	}
 	return &pb.ModifyDocAttrRangeRsp{}, nil
 }
 
 // RetryDocAudit 重试文档审核
 func (s *Service) RetryDocAudit(ctx context.Context, req *pb.RetryDocAuditReq) (*pb.RetryDocAuditRsp, error) {
 	rsp := new(pb.RetryDocAuditRsp)
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
-	if err != nil {
-		return nil, err
-	}
-	robot, err := s.getAppByAppBizID(ctx, botBizID)
-	log.DebugContextf(ctx, "重试文档审核 RetryDocAudit 失败 robot:%+v err:%+v", robot, err)
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
+	logx.D(ctx, "重试文档审核 RetryDocAudit 失败 app:%+v error:%+v", app, err)
 	if err != nil {
 		return rsp, errs.ErrDocCannotBeSubmittedForAudit
 	}
@@ -2361,66 +2610,89 @@ func (s *Service) RetryDocAudit(ctx context.Context, req *pb.RetryDocAuditReq) (
 	if err != nil {
 		return nil, err
 	}
-	doc, err := s.dao.GetDocByBizID(ctx, docBizID, robot.ID)
-	log.DebugContextf(ctx, "重试文档审核 RetryDocAudit 失败 1 doc:%+v err:%+v", doc, err)
+	doc, err := s.docLogic.GetDocByBizID(ctx, docBizID, app.PrimaryId)
+	logx.D(ctx, "重试文档审核 RetryDocAudit 失败 1 doc:%+v err:%+v", doc, err)
 	if err != nil {
 		return rsp, err
 	}
-	if doc.Status != model.DocStatusAuditFail {
-		log.DebugContextf(ctx, "重试文档审核 RetryDocAudit 2 失败 doc:%+v err:%+v", doc, err)
+	if doc.Status != docEntity.DocStatusAuditFail {
+		logx.D(ctx, "重试文档审核 RetryDocAudit 2 失败 doc:%+v err:%+v", doc, err)
 		return rsp, errs.ErrDocCannotBeSubmittedForAudit
 	}
-	if err := CheckIsCharSizeExceeded(ctx, s.dao, botBizID, robot.CorpID, int64(doc.CharSize)); err != nil {
+	err = s.financeLogic.CheckKnowledgeBaseQuota(ctx, finance.CheckQuotaReq{
+		App:                  app,
+		NewCharSize:          doc.CharSize,
+		NewKnowledgeCapacity: doc.FileSize,
+		NewStorageCapacity:   gox.IfElse(doc.Source == docEntity.SourceFromCorpCOSDoc, 0, doc.FileSize),
+		NewComputeCapacity:   doc.FileSize,
+	})
+	if err != nil {
 		return rsp, err
 	}
-	audits, err := s.dao.GetBizAuditStatusByRelateIDs(ctx, robot.ID, robot.CorpID, []uint64{doc.ID})
-	log.DebugContextf(ctx, "重试文档审核 RetryDocAudit 失败 audits:%+v err:%+v", audits, err)
+	audits, err := s.auditLogic.GetBizAuditStatusByRelateIDs(ctx, app.PrimaryId, app.CorpPrimaryId, []uint64{doc.ID})
+	logx.D(ctx, "重试文档审核 RetryDocAudit 失败 audits:%+v err:%+v", audits, err)
 	if err != nil {
 		return rsp, errs.ErrDocCannotBeSubmittedForAudit
 	}
-	if audit, ok := audits[doc.ID]; !ok || audit.Status != model.AuditStatusTimeoutFail {
+	if audit, ok := audits[doc.ID]; !ok || audit.Status != releaseEntity.AuditStatusTimeoutFail {
 		return rsp, errs.ErrDocCannotBeSubmittedForAudit
 	}
-	if err = s.dao.CreateDocAudit(ctx, doc, metadata.Metadata(ctx).EnvSet()); err != nil {
+	if err = s.docLogic.CreateDocAudit(ctx, doc, contextx.Metadata(ctx).EnvSet()); err != nil {
 		return rsp, errs.ErrCreateAuditFail
 	}
-	doc.Status = model.DocStatusAuditIng
-	doc.AuditFlag = model.AuditFlagWait
+	doc.Status = docEntity.DocStatusAuditIng
+	doc.AuditFlag = docEntity.AuditFlagWait
 	doc.Message = ""
-	doc.StaffID = pkg.StaffID(ctx)
-	if err := s.dao.UpdateDocStatusAndCharSize(ctx, doc); err != nil {
+	doc.StaffID = contextx.Metadata(ctx).StaffID()
+	if err := s.docLogic.UpdateDocStatusAndCharSize(ctx, doc); err != nil {
 		return rsp, errs.ErrUpdateDocStatusFail
 	}
 	return rsp, nil
 }
 
 func (s *Service) getValidityDocCount(ctx context.Context, robotID, corpID uint64) (uint64, error) {
-	req := model.DocListReq{
-		CorpID:  corpID,
-		RobotID: robotID,
-		FileTypes: []string{model.FileTypeDocx, model.FileTypeMD, model.FileTypeTxt, model.FileTypePdf,
-			model.FileTypeXlsx, model.FileTypePptx, model.FileTypePpt, model.FileTypeDoc, model.FileTypeXls,
-			model.FileTypePng, model.FileTypeJpg, model.FileTypeJpeg, model.FileTypeCsv},
-		Page:           1,
-		PageSize:       1,
+	// req := docEntity.DocListReq{
+	// 	CorpPrimaryId:  corpID,
+	// 	AppPrimaryId: robotID,
+	// 	FileTypes: []string{docEntity.FileTypeDocx, docEntity.FileTypeMD, docEntity.FileTypeTxt, docEntity.FileTypePdf,
+	// 		docEntity.FileTypeXlsx, docEntity.FileTypePptx, docEntity.FileTypePpt,
+	// 		docEntity.FileTypeDoc, docEntity.FileTypeXls,
+	// 		docEntity.FileTypePng, docEntity.FileTypeJpg, docEntity.FileTypeJpeg, docEntity.FileTypeCsv},
+	// 	Page:           1,
+	// 	PageSize:       1,
+	// 	Status:         s.getValidityDocStatus(),
+	// 	ValidityStatus: docEntity.DocUnExpiredStatus,
+	// 	Opts:           []uint32{docEntity.DocOptDocImport},
+	// }
+	offset, limit := utilx.Page(1, 1)
+	docFilter := &docEntity.DocFilter{
+		CorpId:  corpID,
+		RobotId: robotID,
+		FileTypes: []string{docEntity.FileTypeDocx, docEntity.FileTypeMD, docEntity.FileTypeTxt, docEntity.FileTypePdf,
+			docEntity.FileTypeXlsx, docEntity.FileTypePptx, docEntity.FileTypePpt, docEntity.FileTypeKeyNote,
+			docEntity.FileTypeDoc, docEntity.FileTypeXls, docEntity.FileTypeNumbers, docEntity.FileTypePages,
+			docEntity.FileTypePng, docEntity.FileTypeJpg, docEntity.FileTypeJpeg, docEntity.FileTypeCsv},
+		Offset:         offset,
+		Limit:          limit,
 		Status:         s.getValidityDocStatus(),
-		ValidityStatus: model.DocUnExpiredStatus,
-		Opts:           []uint32{model.DocOptDocImport},
+		ValidityStatus: docEntity.DocUnExpiredStatus,
+		Opts:           []uint32{docEntity.DocOptDocImport},
 	}
-	total, _, err := s.dao.GetDocList(ctx, &req)
+	total, err := s.docLogic.GetDocCount(ctx, docEntity.DocParseTblColList, docFilter)
+	// total, _, err := s.dao.GetDocList(ctx, &req)
 	if err != nil {
 		return 0, err
 	}
-	return total, nil
+	return uint64(total), nil
 }
 
 func (s *Service) getValidityDocStatus() []uint32 {
 	return []uint32{
-		model.DocStatusWaitRelease,
-		model.DocStatusReleasing,
-		model.DocStatusReleaseSuccess,
-		model.DocStatusUpdating,
-		model.DocStatusUpdateFail,
+		docEntity.DocStatusWaitRelease,
+		docEntity.DocStatusReleasing,
+		docEntity.DocStatusReleaseSuccess,
+		docEntity.DocStatusUpdating,
+		docEntity.DocStatusUpdateFail,
 	}
 }
 
@@ -2428,100 +2700,97 @@ func (s *Service) getFileNameByType(fileType string) string {
 	if len(fileType) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%s-%d.%s", util.RandStr(20), s.dao.GenerateSeqID(), fileType)
+	random := randx.RandomString(20, randx.WithMode(randx.AlphabetMode))
+	return fmt.Sprintf("%s-%d.%s", random, idgen.GetId(), fileType)
 }
 
 // getCorpByID 通过ID获取企业信息
-func (s *Service) getCorpByID(ctx context.Context, id uint64) (*model.Corp, error) {
-	loginUserType := pkg.LoginUserType(ctx)
+func (s *Service) getCorpByID(ctx context.Context, id uint64) (corpBizID uint64, err error) {
+	loginUserType := contextx.Metadata(ctx).LoginUserType()
 	switch loginUserType {
-	case model.LoginUserExpType:
+	case entity.LoginUserExpType:
 		session, err := s.checkSession(ctx)
 		if err != nil {
-			return nil, err
+			return 0, err
 		}
-		user, err := s.dao.GetExpUserByID(ctx, session.ID)
+		user, err := s.userLogic.DescribeExpUser(ctx, session.ID)
 		if err != nil {
-			return nil, err
+			return 0, err
 		}
-		return &model.Corp{
-			SID:        user.SID,
-			BusinessID: user.BusinessID,
-			FullName:   user.Cellphone,
-			Cellphone:  user.Cellphone,
-			Status:     user.Status,
-			CreateTime: user.CreateTime,
-			UpdateTime: user.UpdateTime,
-		}, nil
+		return user.BusinessID, nil
 	}
-	return s.dao.GetCorpByID(ctx, id)
+	corp, err := s.rpc.PlatformAdmin.DescribeCorpByPrimaryId(ctx, id)
+	if err != nil {
+		logx.E(ctx, "getCorpByID DescribeCorpByPrimaryId err: %+v", err)
+		return 0, err
+	}
+	return corp.GetCorpId(), nil
 }
 
 // RenameDoc 文档重命名
 func (s *Service) RenameDoc(ctx context.Context, req *pb.RenameDocReq) (*pb.RenameDocRsp, error) {
 	rsp := new(pb.RenameDocRsp)
 	log.DebugContext(ctx, "RenameDoc REQ: ", req)
-	staffID, corpID := pkg.StaffID(ctx), pkg.CorpID(ctx)
+	staffID, corpID := contextx.Metadata(ctx).StaffID(), contextx.Metadata(ctx).CorpID()
 	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
 	if err != nil {
-		log.ErrorContextf(ctx, "文档重命名失败 CheckReqBotBizIDUint64 err: %+v", err)
+		logx.E(ctx, "文档重命名失败 CheckReqBotBizIDUint64 err: %+v", err)
 		return nil, err
 	}
-	app, err := client.GetAppInfo(ctx, botBizID, model.AppTestScenes)
+	app, err := s.rpc.AppAdmin.DescribeAppById(ctx, botBizID)
+	// app, err := s.dao.GetAppByAppBizID(ctx, botBizID)
 	if err != nil {
-		log.ErrorContextf(ctx, "文档重命名失败 GetAppByAppBizID err: %+v", err)
+		logx.E(ctx, "文档重命名失败 GetAppByAppBizID err: %+v", err)
 		return nil, err
 	}
-	if corpID != 0 && corpID != app.GetCorpId() {
+	if corpID != 0 && corpID != app.CorpPrimaryId {
 		return nil, errs.ErrWrapf(errs.ErrCorpAppNotEqual, i18n.Translate(ctx, i18nkey.KeyEnterpriseAppAffiliationMismatch))
-	}
-	releaseCount, err := logicDoc.GetDocReleaseCount(ctx, corpID, app.GetId())
-	if err != nil {
-		return rsp, errs.ErrGetReleaseFail
 	}
 
 	docBizID, err := util.CheckReqParamsIsUint64(ctx, req.GetDocBizId())
 	if err != nil {
-		log.ErrorContextf(ctx, "文档重命名失败 CheckReqParamsIsUint64 err: %+v", err)
+		logx.E(ctx, "文档重命名失败 CheckReqParamsIsUint64 err: %+v", err)
 		return nil, err
 	}
-	doc, err := s.dao.GetDocByBizID(ctx, docBizID, app.GetId())
+	doc, err := s.docLogic.GetDocByBizID(ctx, docBizID, app.PrimaryId)
 	if err != nil {
-		log.ErrorContextf(ctx, "文档重命名失败 GetDocByBizID err: %+v", err)
+		logx.E(ctx, "文档重命名失败 GetDocByBizID err: %+v", err)
 		return nil, err
 	}
-	if doc.RobotID != app.GetId() {
+	if doc.RobotID != app.PrimaryId {
 		return rsp, errs.ErrWrapf(errs.ErrDocNotFound, i18n.Translate(ctx, i18nkey.KeyDocumentNotInCurrentApp))
 	}
 	if !doc.CanRename() {
-		log.ErrorContextf(ctx, "文档重命名失败, 当前状态: %+v", doc.StatusDesc(false))
+		logx.E(ctx, "文档重命名失败, 当前状态: %+v", doc.StatusDesc(false))
 		return nil, errs.ErrDocCannotRename
 	}
 	if doc.GetRealFileName() == req.NewName {
-		log.ErrorContextf(ctx, "文档名称未修改")
+		logx.E(ctx, "文档名称未修改")
 		return nil, errs.ErrDocNameNotChanged
 	}
 	if filepath.Ext(req.NewName) != filepath.Ext(doc.FileName) {
-		log.ErrorContextf(ctx, "文档重命名失败, 文档名称后缀不一致, 原文档名: %+v, 新文档名: %+v",
+		logx.E(ctx, "文档重命名失败, 文档名称后缀不一致, 原文档名: %+v, 新文档名: %+v",
 			doc.FileName, req.NewName)
 		return nil, errs.ErrDocNameExtNotMatch
 	}
 	if util.FileNameNoSuffix(req.NewName) == "" {
-		log.ErrorContextf(ctx, "文档重命名失败, 文档名称是空的, 原文档名: %+v, 新文档名: %+v",
+		logx.E(ctx, "文档重命名失败, 文档名称是空的, 原文档名: %+v, 新文档名: %+v",
 			doc.FileName, req.NewName)
 		return nil, errs.ErrDocNameVerifyFailed
 	}
-	if !app.GetIsShareKnowledgeBase() && doc.Status == model.DocStatusReleaseSuccess &&
-		releaseCount >= int64(config.App().RobotDefault.DocReleaseMaxLimit) {
-		return nil, errs.ErrReleaseMaxCount
-	}
 	doc.FileNameInAudit = req.NewName
 
-	if err := s.dao.RenameDoc(ctx, staffID, app, doc); err != nil {
-		log.ErrorContextf(ctx, "文档重命名失败 RenameDoc err: %+v", err)
+	if err := s.docLogic.RenameDoc(ctx, staffID, app, doc); err != nil {
+		logx.E(ctx, "文档重命名失败 RenameDoc err: %+v", err)
 		return nil, err
 	}
-	_ = s.dao.AddOperationLog(ctx, model.DocEventRename, corpID, app.GetId(), req, rsp, doc.FileName, doc.FileNameInAudit)
+
+	fileName := doc.GetDocFileName()
+	if fileName == req.NewName {
+		fileName = doc.FileName
+	}
+
+	auditx.Modify(auditx.BizDocument).App(app.BizId).Space(app.SpaceId).Log(ctx, doc.BusinessID, fileName, req.NewName)
 
 	return rsp, nil
 }
@@ -2529,86 +2798,88 @@ func (s *Service) RenameDoc(ctx context.Context, req *pb.RenameDocReq) (*pb.Rena
 // ResumeDoc 超量失效恢复
 func (s *Service) ResumeDoc(ctx context.Context, req *pb.ResumeDocReq) (*pb.ResumeDocRsp, error) {
 	rsp := new(pb.ResumeDocRsp)
-	staffID, corpID := pkg.StaffID(ctx), pkg.CorpID(ctx)
+	staffID, corpID := contextx.Metadata(ctx).StaffID(), contextx.Metadata(ctx).CorpID()
 	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
 	if err != nil {
-		log.ErrorContextf(ctx, "恢复文档失败 CheckReqBotBizIDUint64 err: %+v", err)
+		logx.E(ctx, "恢复文档失败 CheckReqBotBizIDUint64 err: %+v", err)
 		return nil, err
 	}
 	log.DebugContext(ctx, "ResumeDoc REQ: ", req)
-	bot, err := s.dao.GetAppByAppBizID(ctx, botBizID)
+	bot, err := s.rpc.AppAdmin.DescribeAppById(ctx, botBizID)
+	// bot, err := s.dao.GetAppByAppBizID(ctx, botBizID)
 	if err != nil {
-		log.ErrorContextf(ctx, "恢复文档失败 GetAppByAppBizID err: %+v", err)
+		logx.E(ctx, "恢复文档失败 GetAppByAppBizID err: %+v", err)
 		return nil, err
 	}
 	if bot == nil {
 		return nil, errs.ErrAppNotFound
 	}
-	ctx = pkg.WithSpaceID(ctx, bot.SpaceID)
+	newCtx := util.SetMultipleMetaData(ctx, bot.SpaceId, bot.Uin)
 	// 字符数超限不可执行
-	if err = CheckIsUsedCharSizeExceeded(ctx, s.dao, botBizID, corpID); err != nil {
-		return rsp, s.dao.ConvertErrMsg(ctx, 0, bot.CorpID, err)
+	if err = s.financeLogic.CheckKnowledgeBaseQuota(ctx, finance.CheckQuotaReq{App: bot}); err != nil {
+		return rsp, logicCommon.ConvertErrMsg(ctx, s.rpc, 0, bot.CorpPrimaryId, err)
 	}
-	docBizIDs, err := util.BatchCheckReqParamsIsUint64(ctx, req.GetDocBizIds())
+	docBizIDs, err := util.BatchCheckReqParamsIsUint64(newCtx, req.GetDocBizIds())
 	if err != nil {
-		log.ErrorContextf(ctx, "恢复文档失败 BatchCheckReqParamsIsUint64 err: %+v", err)
+		logx.E(newCtx, "Resume Doc Failed. BatchCheckReqParamsIsUint64 err: %+v", err)
 		return rsp, err
 	}
-	docM, err := s.dao.GetDocByBizIDs(ctx, docBizIDs, bot.ID)
+	docM, err := s.docLogic.GetDocByBizIDs(newCtx, docBizIDs, bot.PrimaryId)
 	if err != nil {
-		log.ErrorContextf(ctx, "恢复文档失败 GetDocByBizIDs err: %+v", err)
+		logx.E(ctx, "Resume Doc Failed. GetDocByBizIDs err: %+v", err)
 		return rsp, err
 	}
-	docExceededTimes := []model.DocExceededTime{}
+	docExceededTimes := []entity.DocExceededTime{}
 	for _, doc := range docM {
 		if !doc.IsCharSizeExceeded() {
 			continue
 		}
-		docExceededTimes = append(docExceededTimes, model.DocExceededTime{
+		docExceededTimes = append(docExceededTimes, entity.DocExceededTime{
 			BizID:      doc.BusinessID,
 			UpdateTime: doc.UpdateTime,
 		})
-		if err := s.resumeDoc(ctx, doc); err != nil {
-			log.ErrorContextf(ctx, "恢复部分文档失败 resumeDoc err: %+v", err)
+		if err := s.resumeDoc(newCtx, doc); err != nil {
+			logx.E(newCtx, "恢复部分文档失败 resumeDoc err: %+v", err)
 			continue
 		}
+		auditx.Recover(auditx.BizDocument).App(bot.BizId).Space(bot.SpaceId).Log(newCtx, doc.BusinessID, doc.FileName)
 	}
-	if err := s.dao.CreateDocResumeTask(ctx, corpID, bot.ID, staffID, docExceededTimes); err != nil {
-		log.ErrorContextf(ctx, "恢复文档失败 CreateDocResumeTask err: %+v", err)
+	if err := scheduler.NewDocResumeTask(newCtx, corpID, bot.PrimaryId, staffID, docExceededTimes); err != nil {
+		logx.E(newCtx, "Resume Doc Failed. CreateDocResumeTask err: %+v", err)
 	}
 	return rsp, nil
 }
 
-func (s *Service) resumeDoc(ctx context.Context, doc *model.Doc) error {
+func (s *Service) resumeDoc(ctx context.Context, doc *docEntity.Doc) error {
 	switch doc.Status {
-	case model.DocStatusCharExceeded:
-		doc.Status = model.DocStatusResuming
-	case model.DocStatusUpdateFailCharExceeded:
-		doc.Status = model.DocStatusUpdateFailResuming
-	case model.DocStatusParseImportFailCharExceeded:
-		doc.Status = model.DocStatusParseImportFailResuming
-	case model.DocStatusAuditFailCharExceeded:
-		doc.Status = model.DocStatusAuditFailResuming
-	case model.DocStatusCreateIndexFailCharExceeded:
-		doc.Status = model.DocStatusCreateIndexFailResuming
-	case model.DocStatusExpiredCharExceeded:
-		doc.Status = model.DocStatusExpiredResuming
-	case model.DocStatusAppealFailedCharExceeded:
-		doc.Status = model.DocStatusAppealFailedResuming
+	case docEntity.DocStatusCharExceeded:
+		doc.Status = docEntity.DocStatusResuming
+	case docEntity.DocStatusUpdateFailCharExceeded:
+		doc.Status = docEntity.DocStatusUpdateFailResuming
+	case docEntity.DocStatusParseImportFailCharExceeded:
+		doc.Status = docEntity.DocStatusParseImportFailResuming
+	case docEntity.DocStatusAuditFailCharExceeded:
+		doc.Status = docEntity.DocStatusAuditFailResuming
+	case docEntity.DocStatusCreateIndexFailCharExceeded:
+		doc.Status = docEntity.DocStatusCreateIndexFailResuming
+	case docEntity.DocStatusExpiredCharExceeded:
+		doc.Status = docEntity.DocStatusExpiredResuming
+	case docEntity.DocStatusAppealFailedCharExceeded:
+		doc.Status = docEntity.DocStatusAppealFailedResuming
 	default:
 		// 不可恢复
 		return nil
 	}
-	updateDocFilter := &dao.DocFilter{
+	updateDocFilter := &docEntity.DocFilter{
 		IDs: []uint64{doc.ID}, CorpId: doc.CorpID, RobotId: doc.RobotID,
 	}
-	update := &model.Doc{
-		StaffID:    pkg.StaffID(ctx),
+	update := &docEntity.Doc{
+		StaffID:    contextx.Metadata(ctx).StaffID(),
 		UpdateTime: time.Now(),
 		Status:     doc.Status,
 	}
-	updateDocColumns := []string{dao.DocTblColStaffId, dao.DocTblColStatus, dao.DocTblColUpdateTime}
-	_, err := dao.GetDocDao().UpdateDoc(ctx, updateDocColumns, updateDocFilter, update)
+	updateDocColumns := []string{docEntity.DocTblColStaffId, docEntity.DocTblColStatus, docEntity.DocTblColUpdateTime}
+	_, err := s.docLogic.UpdateLogicByDao(ctx, updateDocColumns, updateDocFilter, update)
 	if err != nil {
 		return err
 	}
@@ -2616,7 +2887,7 @@ func (s *Service) resumeDoc(ctx context.Context, doc *model.Doc) error {
 }
 
 // listDocIDs 获取Doc ID
-func listDocIDs(details map[uint64]*model.Doc) []uint64 {
+func listDocIDs(details map[uint64]*docEntity.Doc) []uint64 {
 	values := maps.Values(details)
 	var docIDs []uint64
 	for _, value := range values {
@@ -2627,49 +2898,37 @@ func listDocIDs(details map[uint64]*model.Doc) []uint64 {
 
 // GroupDoc Doc分组
 func (s *Service) GroupDoc(ctx context.Context, req *pb.GroupObjectReq) (*pb.GroupObjectRsp, error) {
-	log.InfoContextf(ctx, "GroupDoc Req:%+v", req)
+	logx.I(ctx, "GroupDoc Req:%+v", req)
 	rsp := new(pb.GroupObjectRsp)
-	corpID := pkg.CorpID(ctx)
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
-	if err != nil {
-		return nil, err
-	}
-	app, err := s.getAppByAppBizID(ctx, botBizID)
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetBotBizId())
 	if err != nil {
 		return rsp, errs.ErrRobotNotFound
 	}
 	if err = app.IsWriteable(); err != nil {
 		return rsp, err
 	}
-	releaseCount, err := logicDoc.GetDocReleaseCount(ctx, corpID, app.ID)
-	if err != nil {
-		return rsp, errs.ErrGetReleaseFail
-	}
-	if !app.IsShared && releaseCount >= int64(config.App().RobotDefault.DocReleaseMaxLimit) {
-		return rsp, errs.ErrReleaseMaxCount
-	}
 	var cateID uint64
 	cateBizID, err := util.CheckReqParamsIsUint64(ctx, req.GetCateBizId())
 	if err != nil {
 		return nil, err
 	}
-	if cateID, err = s.dao.CheckCateBiz(ctx, model.DocCate, corpID, cateBizID, app.ID); err != nil {
+	if cateID, err = s.cateLogic.VerifyCateBiz(ctx, cateEntity.DocCate, app.CorpPrimaryId, cateBizID, app.PrimaryId); err != nil {
 		return rsp, errs.ErrCateNotFound
 	}
-	var details map[uint64]*model.Doc
+	var details map[uint64]*docEntity.Doc
 	var docIDs []uint64
 	ids := slicex.Unique(req.GetBizIds())
-	details, err = s.dao.GetDocByBizIDs(ctx, ids, app.ID)
+	details, err = s.docLogic.GetDocByBizIDs(ctx, ids, app.PrimaryId)
 	if err != nil {
 		return rsp, errs.ErrDocNotFound
 	}
 	// 检查文档是否在发布中
-	releasingDocIdMap, err := logicDoc.GetReleasingDocId(ctx, app.ID, docIDs)
+	releasingDocIdMap, err := s.docLogic.GetReleasingDocId(ctx, app.PrimaryId, docIDs)
 	if err != nil {
-		log.ErrorContextf(ctx, "获取发布中的文档失败 err:%+v", err)
+		logx.E(ctx, "获取发布中的文档失败 err:%+v", err)
 		return rsp, errs.ErrSystem
 	}
-	latestRelease, err := s.dao.GetLatestRelease(ctx, corpID, app.ID)
+	latestRelease, err := s.releaseLogic.GetLatestRelease(ctx, app.CorpPrimaryId, app.PrimaryId)
 	if err != nil {
 		return rsp, errs.ErrSystem
 	}
@@ -2681,13 +2940,13 @@ func (s *Service) GroupDoc(ctx context.Context, req *pb.GroupObjectReq) (*pb.Gro
 			if statusDesc == "" {
 				statusDesc = "处理中"
 			}
-			return rsp, errs.ErrWrapf(errs.ErrDocStatusNotStable, i18n.Translate(ctx, i18nkey.KeyDocumentCannotModifyGroup),
+			return rsp, errs.ErrWrapf(errs.ErrDocStatusNotStable, i18nkey.KeyDocumentCannotModifyGroup,
 				doc.BusinessID, statusDesc)
 		}
 	}
 
 	docIDs = listDocIDs(details)
-	if err = dao.GetCateDao(model.DocCate).GroupCateObject(ctx, s.dao, model.DocCate, docIDs, cateID, app); err != nil {
+	if err = s.cateLogic.GroupCateObject(ctx, cateEntity.DocCate, docIDs, cateID, app); err != nil {
 		return rsp, errs.ErrSystem
 	}
 
@@ -2695,42 +2954,38 @@ func (s *Service) GroupDoc(ctx context.Context, req *pb.GroupObjectReq) (*pb.Gro
 }
 
 // ReportKnowledgeOperationLog 知识型操作日志上报
+// TODO(ericjwang): 哪里在用？貌似没流量，代码里也搜不到内部调用
 func (s *Service) ReportKnowledgeOperationLog(ctx context.Context, req *pb.ReportKnowledgeOperationLogReq) (
 	*pb.ReportKnowledgeOperationLogRsp, error) {
-	log.InfoContextf(ctx, "ReportKnowledgeOperationLog Req:%+v", req)
+	logx.I(ctx, "ReportKnowledgeOperationLog Req:%+v", req)
 	rsp := new(pb.ReportKnowledgeOperationLogRsp)
-	corpID := pkg.CorpID(ctx)
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetAppBizId())
-	if err != nil {
-		return nil, err
-	}
 	operationBizIds, err := util.CheckReqSliceUint64(ctx, req.GetOperationBizIds())
 	if err != nil {
 		return nil, err
 	}
-	app, err := s.getAppByAppBizID(ctx, botBizID)
+	app, err := s.DescribeAppAndCheckCorp(ctx, req.GetAppBizId())
 	if err != nil {
 		return rsp, errs.ErrRobotNotFound
 	}
-	if app.HasDeleted() {
+	if app.IsDeleted {
 		return rsp, nil
 	}
-	if req.GetOperationType() != permissions.SyncInfoTypeDoc && req.GetOperationType() != permissions.SyncInfoTypeQA {
+	if req.GetOperationType() != user.SyncInfoTypeDoc && req.GetOperationType() != user.SyncInfoTypeQA {
 		return nil, errs.ErrParamsNotExpected
 	}
-	log.DebugContextf(ctx, "ReportKnowledgeOperationLog|OperationType:%s|corpID:%+d|botBizID:%+d"+
-		"|operationBizIds:%+v", req.GetOperationType(), corpID, app.BusinessID, operationBizIds)
+	logx.D(ctx, "ReportKnowledgeOperationLog|OperationType:%s|corpID:%+d|botBizID:%+d|operationBizIds:%+v",
+		req.GetOperationType(), app.CorpPrimaryId, app.BizId, operationBizIds)
 
-	//if doc.CorpID != corpID || doc.RobotID != app.ID {
-	//	log.InfoContextf(ctx, "BatchModifyDoc doc permission Denied! docInfo:%+v,corpID:%+v,robotID:%+v", doc,
+	// if doc.CorpPrimaryId != corpID || doc.AppPrimaryId != app.ID {
+	//	logx.I(ctx, "BatchModifyDoc doc permission Denied! docInfo:%+v,corpID:%+v,robotID:%+v", doc,
 	//		corpID, app.ID)
-	//	return rsp, errs.ErrPermissionDenied
-	//}
+	//	return rsp, pkg.ErrPermissionDenied
+	// }
 	return rsp, err
 }
 
 func (s *Service) getShareKnowledgeValidityDocCount(ctx context.Context, appBizID uint64) (uint64, error) {
-	shareKnowledges, err := dao.GetAppShareKGDao().GetAppShareKGList(ctx, appBizID)
+	shareKnowledges, err := s.kbDao.GetAppShareKGList(ctx, appBizID)
 	if err != nil {
 		return 0, err
 	}
@@ -2741,20 +2996,24 @@ func (s *Service) getShareKnowledgeValidityDocCount(ctx context.Context, appBizI
 		}
 		knowledgesBizIDs = append(knowledgesBizIDs, v.KnowledgeBizID)
 	}
-	robots, err := s.dao.GetRobotList(ctx, 0, "", knowledgesBizIDs, 0, 1, uint32(len(knowledgesBizIDs)))
+	// robots, err := s.dao.GetRobotList(ctx, 0, "", knowledgesBizIDs, 0, 1, uint32(len(knowledgesBizIDs)))
+	appListReq := appconfig.ListAppBaseInfoReq{
+		AppBizIds:  knowledgesBizIDs,
+		PageNumber: 1,
+		PageSize:   uint32(len(knowledgesBizIDs)),
+	}
+	apps, _, err := s.rpc.AppAdmin.ListAppBaseInfo(ctx, &appListReq)
 	if err != nil {
 		return 0, err
 	}
-	knowledgeIDs := make([]uint64, 0, len(robots))
-	for _, v := range robots {
-		knowledgeIDs = append(knowledgeIDs, v.ID)
-	}
-	if len(knowledgeIDs) == 0 {
+	appPrimaryIds := slicex.Pluck(apps, func(v *entity.AppBaseInfo) uint64 { return v.PrimaryId }) // 主键 id
+	if len(appPrimaryIds) == 0 {
 		return 0, nil
 	}
-	total, err := dao.GetDocDao().GetDocCount(ctx, nil, &dao.DocFilter{
-		RobotIDs: knowledgeIDs,
+	total, err := s.docLogic.GetDocCount(ctx, nil, &docEntity.DocFilter{
+		RobotIDs: appPrimaryIds,
 	})
-	log.DebugContextf(ctx, "getShareKnowledgeValidityDocCount appBizID:%d robots:%v total:%d", appBizID, knowledgeIDs, total)
+	logx.D(ctx, "getShareKnowledgeValidityDocCount appBizID:%d robots:%v total:%d", appBizID, appPrimaryIds,
+		total)
 	return uint64(total), err
 }

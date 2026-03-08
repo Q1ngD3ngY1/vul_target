@@ -1,0 +1,54 @@
+### ⚠️注意：要删除所有client 中的 disable_servicerouter: true
+
+
+client:
+  filter:
+    # 新增
+    - cle-route-propagator
+  service:
+    # 修改配置格式
+    - name: redis.qbot.admin
+      target: redis://:aLmYQy5atHze4pBm@11.149.52.24:6379/2
+      timeout: 5000
+    # 修改配置格式
+    - name: redis.qbot.retrieval.config
+      target: redis://:aLmYQy5atHze4pBm@11.149.52.24:6379/1
+      timeout: 5000
+
+    # 删除
+    - name: trpc.KEP.bot_retrieval_server.DirectIndex
+    # 删除
+    - name: trpc.KEP.bot_retrieval_server.Retrieval
+
+    # 以下都是新增配置
+    - callee:  qbot.qbot.infosec.Infosec
+      name:  qbot.qbot.infosec.Infosec
+      target: polaris://qbot.qbot.infosec.Infosec
+      namespace: Production
+      network: tcp
+      protocol: trpc
+      timeout: 20000
+    - name: trpc.adp.app_config.Admin
+      namespace: Production
+      target: polaris://trpc.adp.app_config.Admin
+      timeout: 30000
+    - name: trpc.adp.platform_manager.Login
+      namespace: Production
+      target: polaris://trpc.adp.platform_manager.Login
+      timeout: 30000
+    - name: trpc.adp.platform_manager.Admin
+      namespace: Production
+      target: polaris://trpc.adp.platform_manager.Admin
+      timeout: 30000
+    - name: trpc.adp.resource_gallery.Admin
+      namespace: Production
+      target: polaris://trpc.adp.resource_gallery.Admin
+      timeout: 30000
+    - name: trpc.adp.kb_retrieval.Retrieval
+      namespace: Production
+      target: polaris://trpc.adp.kb_retrieval.Retrieval
+      timeout: 30000
+    - name: trpc.adp.kb_retrieval.DirectIndex
+      namespace: Production
+      target: polaris://trpc.adp.kb_retrieval.DirectIndex
+      timeout: 30000

@@ -2,77 +2,77 @@ package service
 
 import (
 	"context"
-	"git.code.oa.com/trpc-go/trpc-go/log"
-	"git.woa.com/baicaoyuan/moss/types/slicex"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/dao"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/model"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/util"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg/errs"
-	pb "git.woa.com/dialogue-platform/lke_proto/pb-protocol/bot_knowledge_config_server"
-	"git.woa.com/dialogue-platform/lke_proto/pb-protocol/knowledge"
-	jsoniter "github.com/json-iterator/go"
-)
 
-// GetReferDetail 获取来源详情
-func (s *Service) GetReferDetail(ctx context.Context, req *pb.GetReferDetailReq) (*pb.GetReferDetailRsp, error) {
-	log.ErrorContextf(ctx, "准备删除的接口收到了请求 deprecated interface req:%+v", req)
-	rsp := &pb.GetReferDetailRsp{}
-	return rsp, nil
-}
+	"git.woa.com/adp/common/x/encodingx/jsonx"
+	"git.woa.com/adp/common/x/gox/slicex"
+	"git.woa.com/adp/common/x/logx"
+	"git.woa.com/adp/kb/kb-config/internal/entity"
+	"git.woa.com/adp/kb/kb-config/internal/util"
+	"git.woa.com/adp/kb/kb-config/pkg/errs"
+	pb "git.woa.com/adp/pb-go/kb/kb_config"
+)
 
 // DescribeRefer 获取来源详情
 func (s *Service) DescribeRefer(ctx context.Context, req *pb.DescribeReferReq) (*pb.DescribeReferRsp, error) {
 	rsp := new(pb.DescribeReferRsp)
-	log.InfoContextf(ctx, "DescribeRefer Req:%+v", req)
+	logx.I(ctx, "DescribeRefer Req:%+v", req)
 	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
 	if err != nil {
 		return nil, err
 	}
-	app, err := s.dao.GetAppByAppBizID(ctx, botBizID)
+	app, err := s.rpc.AppAdmin.DescribeAppById(ctx, botBizID)
+	// app, err := s.dao.GetAppByAppBizID(ctx, botBizID)
 	if err != nil {
 		return rsp, errs.ErrRobotNotFound
 	}
 	if app == nil {
 		return rsp, errs.ErrRobotNotFound
 	}
-	//threshold := config.App().HighLightThreshold
+	// threshold := config.App().HighLightThreshold
 
 	referBizIDs, err := util.CheckReqSliceUint64(ctx, req.GetReferBizIds())
 	if err != nil {
 		return nil, err
 	}
-	refers, err := s.dao.GetRefersByBusinessIDs(ctx, app.ID, referBizIDs)
+	refers, err := s.docLogic.GetRefersByBusinessIDs(ctx, app.PrimaryId, referBizIDs)
 	if err != nil {
 		return rsp, errs.ErrGetReferFail
+	}
+	if len(refers) == 0 {
+		return rsp, nil
 	}
 	docIDs := make([]uint64, 0, len(refers))
 	for _, refer := range refers {
 		docIDs = append(docIDs, refer.DocID)
 	}
 	docIDs = slicex.Unique(docIDs)
-	docs, err := s.dao.GetDocByIDs(ctx, docIDs, app.ID)
+	docs, err := s.docLogic.GetDocByIDs(ctx, docIDs, app.PrimaryId)
 	if err != nil {
 		return rsp, errs.ErrGetReferFail
 	}
+	var corpID uint64
 	appIDs := make([]uint64, 0, len(refers))
 	for _, doc := range docs {
 		appIDs = append(appIDs, doc.RobotID)
+		if corpID == 0 {
+			corpID = doc.CorpID // 这里需要使用doc的企业id
+		}
 	}
-	appID2AppBizIDMap, err := dao.GetAppBizIDsByAppIDs(ctx, appIDs)
+	appID2AppBizIDMap, err := s.cacheLogic.GetAppBizIdsByPrimaryIds(ctx, corpID, appIDs)
 	if err != nil {
-		log.ErrorContextf(ctx, "DescribeRefer|GetAppBizIDsByAppIDs|err:%+v", err)
+		logx.E(ctx, "DescribeRefer|GetAppBizIdsByPrimaryIds|err:%+v", err)
 		return rsp, err
 	}
 	rsp.List = make([]*pb.DescribeReferRsp_ReferDetail, 0, len(refers))
-	//var highlightRes []*pb.Highlight
+	// var highlightRes []*pb.Highlight
 	for _, refer := range refers {
 		var docBizID uint64
 		var docName string
 		var docAppID uint64
 		if doc, ok := docs[refer.DocID]; ok {
 			// QA类型且文档未开启引用时，仅记录日志不获取业务ID和文件名
-			if refer.DocType == model.ReferTypeQA && !doc.IsReferOpen() {
-				log.InfoContextf(ctx, "DescribeRefer|!IsReferOpen|docID|%d|referID|%d",
+			if refer.DocType == entity.ReferTypeQA && !doc.IsReferOpen() {
+				logx.I(ctx, "DescribeRefer|!IsReferOpen|docID|%d|referID|%d",
 					doc.BusinessID, refer.BusinessID)
 			} else {
 				// 非QA类型或文档已开启引用时，正常获取业务ID和文件名
@@ -83,28 +83,28 @@ func (s *Service) DescribeRefer(ctx context.Context, req *pb.DescribeReferReq) (
 		}
 		pageInfos, pageData := make([]uint32, 0), make([]int32, 0)
 		if len(refer.PageInfos) != 0 {
-			if err = jsoniter.UnmarshalFromString(refer.PageInfos, &pageData); err != nil {
-				log.WarnContextf(ctx, "DescribeRefer|PageInfos|UnmarshalFromString err:%+v", err)
+			if err = jsonx.UnmarshalFromString(refer.PageInfos, &pageData); err != nil {
+				logx.W(ctx, "DescribeRefer|PageInfos|UnmarshalFromString err:%+v", err)
 			}
 			for _, page := range pageData {
 				pageInfos = append(pageInfos, uint32(page))
 			}
 		}
-		sheetInfos, sheetData := make([]string, 0), make([]*knowledge.PageContent_SheetData, 0)
+		sheetInfos, sheetData := make([]string, 0), make([]*pb.PageContent_SheetData, 0)
 		if len(refer.SheetInfos) != 0 {
-			if err = jsoniter.UnmarshalFromString(refer.SheetInfos, &sheetData); err != nil {
-				log.WarnContextf(ctx, "DescribeRefer|SheetInfos|UnmarshalFromString err:%+v", err)
+			if err = jsonx.UnmarshalFromString(refer.SheetInfos, &sheetData); err != nil {
+				logx.W(ctx, "DescribeRefer|SheetInfos|UnmarshalFromString err:%+v", err)
 			}
 			for _, sheet := range sheetData {
 				sheetInfos = append(sheetInfos, sheet.SheetName)
 			}
 		}
-		//highlightRes = model.HighlightRefer(ctx, refer.Answer, refer.OrgData, threshold)
+		// highlightRes = model.HighlightRefer(ctx, refer.Answer, refer.OrgData, threshold)
 		knowledgeBizID, ok := appID2AppBizIDMap[docAppID]
 		if !ok {
-			log.WarnContextf(ctx, "DescribeRefer|GetAppBizIDsByAppIDs|appID|%d|not found", docAppID)
+			logx.W(ctx, "DescribeRefer|GetAppBizIdsByPrimaryIds|appID|%d|not found", docAppID)
 			// 降级：用当前应用业务ID兜底
-			knowledgeBizID = app.BusinessID
+			knowledgeBizID = app.BizId
 		}
 
 		rsp.List = append(rsp.List, &pb.DescribeReferRsp_ReferDetail{
@@ -127,12 +127,5 @@ func (s *Service) DescribeRefer(ctx context.Context, req *pb.DescribeReferReq) (
 			KnowledgeBizId: knowledgeBizID,
 		})
 	}
-	return rsp, nil
-}
-
-// MarkRefer .
-func (s *Service) MarkRefer(ctx context.Context, req *pb.MarkReferReq) (*pb.MarkReferRsp, error) {
-	log.ErrorContextf(ctx, "准备删除的接口收到了请求 deprecated interface req:%+v", req)
-	rsp := new(pb.MarkReferRsp)
 	return rsp, nil
 }

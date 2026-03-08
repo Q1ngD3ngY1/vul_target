@@ -10,18 +10,17 @@ import (
 	"fmt"
 	"strings"
 
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/config"
-	utilConfig "git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/util/config"
-	"git.woa.com/dialogue-platform/common/v3/utils"
+	"git.woa.com/adp/common/x/cryptox/aesx"
+	"git.woa.com/adp/kb/kb-config/internal/config"
 )
 
 // Encrypt 加密
-func Encrypt(plainText string) (string, error) {
-	aesKey, err := base64.StdEncoding.DecodeString(config.App().DbSource.Salt)
+func Encrypt(plainText, saltBase64 string) (string, error) {
+	aesKey, err := base64.StdEncoding.DecodeString(saltBase64)
 	if err != nil {
 		return "", err
 	}
-	cipherText, err := utils.AesEncrypt([]byte(plainText), aesKey)
+	cipherText, err := aesx.CBCEncrypt([]byte(plainText), aesKey)
 	if err != nil {
 		return "", err
 	}
@@ -30,8 +29,8 @@ func Encrypt(plainText string) (string, error) {
 }
 
 // Decrypt 解密
-func Decrypt(cipherText string) (string, error) {
-	aesKey, err := base64.StdEncoding.DecodeString(config.App().DbSource.Salt)
+func Decrypt(cipherText, saltBase64 string) (string, error) {
+	aesKey, err := base64.StdEncoding.DecodeString(saltBase64)
 	if err != nil {
 		return "", err
 	}
@@ -42,7 +41,7 @@ func Decrypt(cipherText string) (string, error) {
 		return "", err
 	}
 
-	plainText, err := utils.AesDecrypt(cipherBytes, aesKey)
+	plainText, err := aesx.CBCDecrypt(cipherBytes, aesKey)
 	if err != nil {
 		return "", err
 	}
@@ -52,7 +51,7 @@ func Decrypt(cipherText string) (string, error) {
 // GetDbSourcePrivateKey RSA-OAEP SHA-256 长度 2048 位
 func GetDbSourcePrivateKey() (string, error) {
 	// 获取私钥, 进行 base64 转换
-	base64Code := utilConfig.GetDbSourceConfig()
+	base64Code := config.App().DbSource.DbSourceDecodeKey
 	privateKey, err := base64.StdEncoding.DecodeString(base64Code)
 	if err != nil {
 		return "", err
@@ -86,7 +85,7 @@ func GeneratePublicKeyPEMByPrivateKey(privateKeyPEM string) (publicKeyPEM string
 	})
 
 	// 返回Base64编码的公钥
-	//return base64.StdEncoding.EncodeToString(pubPEM), nil
+	// return base64.StdEncoding.EncodeToString(pubPEM), nil
 	return pemToBase64(string(pubPEM)), nil
 }
 

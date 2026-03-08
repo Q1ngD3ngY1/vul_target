@@ -3,19 +3,22 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"git.code.oa.com/trpc-go/trpc-go/log"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/client"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/config"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/model"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/util"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg/errs"
-	"git.woa.com/dialogue-platform/lke_proto/pb-protocol/knowledge"
-	sts "github.com/tencentyun/qcloud-cos-sts-sdk/go"
 	"net/url"
 	"path/filepath"
 	"regexp"
 	"time"
+
+	"git.woa.com/adp/common/x/logx"
+	"git.woa.com/adp/kb/kb-config/internal/util"
+
+	"git.woa.com/adp/common/x/contextx"
+	"git.woa.com/adp/kb/kb-config/internal/config"
+	"git.woa.com/adp/kb/kb-config/internal/entity"
+	kbEntity "git.woa.com/adp/kb/kb-config/internal/entity/kb"
+	"git.woa.com/adp/kb/kb-config/pkg/errs"
+	knowledge "git.woa.com/adp/pb-go/kb/kb_config"
+	"github.com/spf13/cast"
+	sts "github.com/tencentyun/qcloud-cos-sts-sdk/go"
 )
 
 // DescribeServiceRole 查询服务角色
@@ -28,19 +31,20 @@ func (s *Service) DescribeServiceRole(ctx context.Context, req *knowledge.Descri
 	var err error
 	rsp := new(knowledge.DescribeServiceRoleRsp)
 
-	log.InfoContextf(ctx, "DescribeServiceRole, request: %+v", req)
+	logx.I(ctx, "DescribeServiceRole, request: %+v", req)
 	defer func() {
-		log.InfoContextf(ctx, "DescribeServiceRole, response: %+v, elapsed: %d, error: %+v",
+		logx.I(ctx, "DescribeServiceRole, response: %+v, elapsed: %d, error: %+v",
 			rsp, time.Since(start).Milliseconds(), err)
 	}()
 
-	corpBizID := pkg.CorpBizID(ctx)
+	corpBizID := contextx.Metadata(ctx).CorpBizID()
 	if corpBizID == 0 {
 		err = errs.ErrContextInvalid
 		return rsp, errs.ErrContextInvalid
 	}
+	appBizId := cast.ToUint64(req.GetAppBizId())
 
-	_, err = client.GetAppInfo(ctx, req.GetAppBizId(), model.RunEnvSandbox)
+	_, err = s.rpc.AppAdmin.DescribeAppInfoUsingScenesById(ctx, appBizId, entity.RunEnvSandbox)
 	if err != nil {
 		return rsp, errs.ErrRobotNotFound
 	}
@@ -50,8 +54,8 @@ func (s *Service) DescribeServiceRole(ctx context.Context, req *knowledge.Descri
 		req.RoleName = config.App().COSDocumentConfig.ServiceRole
 	}
 
-	uin, _ := model.GetLoginUinAndSubAccountUin(ctx)
-	_, status, err := s.dao.AssumeServiceRole(ctx, uin, req.GetRoleName(), 0, nil)
+	uin, _ := kbEntity.GetLoginUinAndSubAccountUin(ctx)
+	_, status, err := s.rpc.Cloud.AssumeServiceRole(ctx, uin, req.GetRoleName(), 0, nil)
 	if err != nil {
 		return rsp, errs.ErrDescribeServiceRoleFailed
 	}
@@ -59,7 +63,6 @@ func (s *Service) DescribeServiceRole(ctx context.Context, req *knowledge.Descri
 	rsp.RoleId = util.Md5Hex(req.GetRoleName())
 	rsp.RoleName = req.GetRoleName()
 	rsp.RoleStatus = status
-	
 	return rsp, nil
 }
 
@@ -73,9 +76,9 @@ func (s *Service) DescribeUserResourceCredential(ctx context.Context, req *knowl
 	var err error
 	rsp := new(knowledge.DescribeUserResourceCredentialRsp)
 
-	log.InfoContextf(ctx, "DescribeUserResourceCredential, request: %+v", req)
+	logx.I(ctx, "DescribeUserResourceCredential, request: %+v", req)
 	defer func() {
-		log.InfoContextf(ctx, "DescribeUserResourceCredential, response: %+v, elapsed: %d, error: %+v",
+		logx.I(ctx, "DescribeUserResourceCredential, response: %+v, elapsed: %d, error: %+v",
 			rsp, time.Since(start).Milliseconds(), err)
 	}()
 
@@ -84,18 +87,19 @@ func (s *Service) DescribeUserResourceCredential(ctx context.Context, req *knowl
 		return rsp, err
 	}
 
-	corpBizID := pkg.CorpBizID(ctx)
+	corpBizID := contextx.Metadata(ctx).CorpBizID()
 	if corpBizID == 0 {
 		err = errs.ErrContextInvalid
 		return rsp, errs.ErrContextInvalid
 	}
+	appBizId := cast.ToUint64(req.GetAppBizId())
 
-	_, err = client.GetAppInfo(ctx, req.GetAppBizId(), model.RunEnvSandbox)
+	_, err = s.rpc.AppAdmin.DescribeAppInfoUsingScenesById(ctx, appBizId, entity.RunEnvSandbox)
 	if err != nil {
 		return rsp, errs.ErrRobotNotFound
 	}
 
-	uin, _ := model.GetLoginUinAndSubAccountUin(ctx)
+	uin, _ := kbEntity.GetLoginUinAndSubAccountUin(ctx)
 
 	// NOTICE: 生成资源路径
 	resourcePolicy, err := s.generatePolicy(ctx, req)
@@ -106,13 +110,13 @@ func (s *Service) DescribeUserResourceCredential(ctx context.Context, req *knowl
 	// NOTICE: 构造访问策略
 	policyBytes, err := json.Marshal(resourcePolicy)
 	if err != nil {
-		log.ErrorContextf(ctx, "DescribeUserResourceCredential, Marshal failed, error: %+v", err)
+		logx.E(ctx, "DescribeUserResourceCredential, Marshal failed, error: %+v", err)
 		return rsp, errs.ErrAssumeServiceRoleFailed
 	}
 	policy := url.QueryEscape(string(policyBytes))
-	log.InfoContextf(ctx, "DescribeUserResourceCredential, policy: %+v", policy)
+	logx.I(ctx, "DescribeUserResourceCredential, policy: %+v", policy)
 
-	credentialResponse, status, err := s.dao.AssumeServiceRole(ctx, uin,
+	credentialResponse, status, err := s.rpc.Cloud.AssumeServiceRole(ctx, uin,
 		config.App().COSDocumentConfig.ServiceRole,
 		uint64(config.App().COSDocumentConfig.CredentialDuration.Seconds()), &policy)
 	if err != nil {
@@ -123,7 +127,7 @@ func (s *Service) DescribeUserResourceCredential(ctx context.Context, req *knowl
 		return rsp, err
 	}
 
-	log.DebugContextf(ctx, "DescribeUserResourceCredential, credentialResponse: %+v", credentialResponse)
+	logx.D(ctx, "DescribeUserResourceCredential, credentialResponse: %+v", credentialResponse)
 
 	rsp.Credential = &knowledge.ResourceCredential{
 		SessionToken:  *credentialResponse.Credentials.Token,
@@ -144,7 +148,7 @@ func (s *Service) extractUINFromBucketName(ctx context.Context, bucketName strin
 
 	matches := re.FindStringSubmatch(bucketName)
 	if len(matches) < 2 {
-		log.ErrorContextf(ctx, "extractUINFromBucketName failed, bucketName: %s", bucketName)
+		logx.E(ctx, "extractUINFromBucketName failed, bucketName: %s", bucketName)
 		return "", errs.ErrParameterInvalid
 	}
 
@@ -157,7 +161,7 @@ func (s *Service) generatePolicy(ctx context.Context, req *knowledge.DescribeUse
 	for _, resourceDescriptor := range req.GetResourceList() {
 		uid, err := s.extractUINFromBucketName(ctx, resourceDescriptor.ResourceBucket)
 		if err != nil {
-			log.ErrorContextf(ctx, "generatePolicy, extractUINFromBucketName failed, error: %+v", err)
+			logx.E(ctx, "generatePolicy, extractUINFromBucketName failed, error: %+v", err)
 			return nil, err
 		}
 
@@ -170,7 +174,7 @@ func (s *Service) generatePolicy(ctx context.Context, req *knowledge.DescribeUse
 			// qcs::cos:{region}:uid/{appid}:{bucket}/{path}/*
 			resource += "/*"
 		}
-		log.InfoContextf(ctx, "generatePolicy, resourceDescriptor: %+v, resource: %+v",
+		logx.I(ctx, "generatePolicy, resourceDescriptor: %+v, resource: %+v",
 			resourceDescriptor, resource)
 		resourceList = append(resourceList, resource)
 	}
@@ -190,14 +194,14 @@ func (s *Service) generatePolicy(ctx context.Context, req *knowledge.DescribeUse
 func (s *Service) validateUserResourceCredentialDescribeRequest(ctx context.Context,
 	req *knowledge.DescribeUserResourceCredentialReq) error {
 	if len(req.GetResourceList()) == 0 ||
-		len(req.GetResourceList()) > model.UserResourceMaxCount {
-		log.ErrorContextf(ctx, "validateUserResourceCredentialDescribeRequest, resourceList invalid, "+
+		len(req.GetResourceList()) > entity.UserResourceMaxCount {
+		logx.E(ctx, "validateUserResourceCredentialDescribeRequest, resourceList invalid, "+
 			"length: %d", len(req.ResourceList))
 		return errs.ErrParameterInvalid
 	}
 
 	if req.GetResourceType() != knowledge.ResourceType_ResourceCOS {
-		log.ErrorContextf(ctx, "validateUserResourceCredentialDescribeRequest, resourceType invalid, "+
+		logx.E(ctx, "validateUserResourceCredentialDescribeRequest, resourceType invalid, "+
 			"type: %d", req.GetResourceType())
 		return errs.ErrParameterInvalid
 	}

@@ -8,18 +8,18 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"runtime"
-	"strconv"
 	"strings"
+	"text/template"
 	"time"
+	"unicode"
 	"unicode/utf8"
-	"unsafe"
 
-	"git.code.oa.com/trpc-go/trpc-go"
-	"git.code.oa.com/trpc-go/trpc-go/log"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/config"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/model"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg/errs"
-	jsoniter "github.com/json-iterator/go"
+	"git.woa.com/adp/common/x/contextx"
+	"git.woa.com/adp/common/x/encodingx/jsonx"
+	"git.woa.com/adp/common/x/logx"
+	"git.woa.com/adp/kb/kb-config/internal/config"
+	docEntity "git.woa.com/adp/kb/kb-config/internal/entity/document"
+	"git.woa.com/adp/kb/kb-config/pkg/errs"
 	"github.com/spf13/cast"
 )
 
@@ -33,12 +33,12 @@ func Md5Hex(in string) string {
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
-// GetAuditFlag TODO
-func GetAuditFlag(fileType string) (uint32, error) {
-	if !config.AuditSwitch() {
-		return model.AuditFlagNoNeed, nil
+// GetFileAuditFlag 获取文件审核标志
+func GetFileAuditFlag(fileType string) (uint32, error) {
+	if !config.FileAuditSwitch() {
+		return docEntity.AuditFlagNoNeed, nil
 	}
-	auditFlag, ok := model.FileTypeAuditFlag[strings.ToLower(fileType)]
+	auditFlag, ok := docEntity.FileTypeAuditFlag[strings.ToLower(fileType)]
 	if !ok {
 		return 0, errs.ErrAuditFlagNotFound
 	}
@@ -52,7 +52,7 @@ func CheckReqParamsIsUint64(ctx context.Context, param string) (uint64, error) {
 	}
 	result, err := cast.ToUint64E(param)
 	if err != nil {
-		log.WarnContextf(ctx, "CastString2Uint64 Failed! FaileInfo:%+v", err)
+		logx.W(ctx, "CastString2Uint64 Failed! FaileInfo:%+v", err)
 		return 0, errs.ErrParamsNotExpected
 	}
 	return result, nil
@@ -99,7 +99,7 @@ func CheckReqStartEndTime(ctx context.Context, startTime, endTime string) (uint6
 		expireEnd = vv
 	}
 	if expireEnd != 0 {
-		//if time.Unix(int64(expireEnd), 0).Before(time.Now().Add(time.Duration(60) * time.Second)) {
+		// if time.Unix(int64(expireEnd), 0).Before(time.Now().Add(time.Duration(60) * time.Second)) {
 		// https://tapd.woa.com/tapd_fe/70080800/story/detail/1070080800123709548 支持按分钟级别判断
 		if time.Unix(int64(expireEnd), 0).Before(time.Now()) {
 			// 如果结束时间小于当前时间，则不允许
@@ -126,62 +126,12 @@ func CheckReqSliceUint64(ctx context.Context, params []string) ([]uint64, error)
 	return paramsUint64, nil
 }
 
-// Object2String 对象转Json字符串
-func Object2String(req any) string {
-	b, _ := jsoniter.Marshal(req)
-	return string(b)
-}
-
-// Object2StringEscapeHTML 对象转Json字符串
-func Object2StringEscapeHTML(req any) string {
-	buff := &bytes.Buffer{}
-	enc := jsoniter.NewEncoder(buff)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(req)
-	return buff.String()
-}
-
-// GetUint64FromString 字符串转uint64
-func GetUint64FromString(str string) uint64 {
-	uInt64Data, err := strconv.ParseUint(str, 10, 64)
-	if err != nil {
-		log.ErrorContextf(trpc.BackgroundContext(), "strconv.ParseUint failed, error: %v", err)
-	}
-	return uInt64Data
-}
-
 // GetCurrentFuncName 获取当前函数名称
 func GetCurrentFuncName(skip int) string {
 	// skip=0 表示当前函数（GetCurrentFuncName）
 	// skip=1 表示调用当前函数的函数（即目标函数）
 	pc, _, _, _ := runtime.Caller(skip)
 	return runtime.FuncForPC(pc).Name()
-}
-
-// FloatsToBytes float32转byte
-func FloatsToBytes(floats []float32) []byte {
-	sizeofFloat32 := int(unsafe.Sizeof(float32(0)))
-	if len(floats) == 0 {
-		return []byte{}
-	}
-	ptr := unsafe.Pointer(&floats[0])
-	dataLen := len(floats) * sizeofFloat32
-	g := make([]byte, dataLen)
-	copy(g, (*[1 << 30]byte)(ptr)[:dataLen:dataLen])
-	return g
-}
-
-// BytesToFloats byte转float32
-func BytesToFloats(bytes []byte) []float32 {
-	sizeofFloat32 := int(unsafe.Sizeof(float32(0)))
-	if len(bytes) < sizeofFloat32 {
-		return []float32{}
-	}
-	ptr := unsafe.Pointer(&bytes[0])
-	dataLen := len(bytes) / sizeofFloat32
-	g := make([]float32, dataLen)
-	copy(g, (*[1 << 30]float32)(ptr)[:dataLen:dataLen])
-	return g
 }
 
 // MergeJsonString 合并两个Json字符串
@@ -193,13 +143,13 @@ func MergeJsonString(jsonStr1 string, jsonStr2 string) (string, error) {
 		return jsonStr1, nil
 	}
 
-	var original map[string]interface{}
-	err := jsoniter.Unmarshal([]byte(jsonStr1), &original)
+	var original map[string]any
+	err := jsonx.Unmarshal([]byte(jsonStr1), &original)
 	if err != nil {
 		return "", err
 	}
-	var fields map[string]interface{}
-	err = jsoniter.Unmarshal([]byte(jsonStr2), &fields)
+	var fields map[string]any
+	err = jsonx.Unmarshal([]byte(jsonStr2), &fields)
 	if err != nil {
 		return "", err
 	}
@@ -209,28 +159,62 @@ func MergeJsonString(jsonStr1 string, jsonStr2 string) (string, error) {
 		original[k] = v
 	}
 	// 编码回JSON
-	mergedJson, err := jsoniter.Marshal(original)
+	mergedJson, err := jsonx.Marshal(original)
 	return string(mergedJson), err
 }
 
-// IsValidBase64 严格校验 Base64 字符串
-func IsValidBase64(s string) bool {
-	if len(s)%4 != 0 {
-		s += strings.Repeat("=", 4-(len(s)%4))
+func GetRequestID(ctx context.Context) string {
+	requestID := contextx.Metadata(ctx).RequestID()
+	if requestID != "" {
+		return requestID
 	}
-	for _, r := range s {
-		if !(r >= 'A' && r <= 'Z' ||
-			r >= 'a' && r <= 'z' ||
-			r >= '0' && r <= '9' ||
-			r == '+' || r == '/' || r == '=') {
-			return false
-		}
+	return contextx.TraceID(ctx)
+}
+
+// When returns v that is true when the given predicate is true else returns the second argument.
+// Mock ternary operator.
+func When[V any](cond bool, yes, no V) V {
+	if cond {
+		return yes
 	}
-	decoded, err := base64.StdEncoding.DecodeString(s)
+	return no
+}
+
+// Object2String 对象转Json字符串
+func Object2String(req any) string {
+	b, _ := jsonx.Marshal(req)
+	return string(b)
+}
+
+// Object2StringEscapeHTML 对象转Json字符串
+func Object2StringEscapeHTML(req any) string {
+	buff := &bytes.Buffer{}
+	enc := jsonx.NewEncoder(buff)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(req)
+	return buff.String()
+}
+
+// Render 模版渲染
+func Render(ctx context.Context, tpl string, req any) (string, error) {
+	// 去除模版每行中的空白符
+	lines := strings.Split(tpl, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimSpace(lines[i])
+	}
+	tpl = strings.Join(lines, "\n")
+
+	e, err := template.New("").Parse(tpl)
 	if err != nil {
-		return false
+		logx.E(ctx, "Compile template失败  tpl:%s err:%+v", tpl, err)
+		return "", err
 	}
-	return utf8.Valid(decoded)
+	b := &bytes.Buffer{}
+	if err := e.Execute(b, req); err != nil {
+		logx.E(ctx, "Execute template失败 tpl:%s, req:%+v err:%+v", tpl, req, err)
+		return "", err
+	}
+	return b.String(), nil
 }
 
 // StrictBase64DecodeToValidString 严格校验 Base64 并解码为字符串（仅当解码内容为合法 UTF-8 时）
@@ -275,4 +259,36 @@ func strictBase64Decode(input string) ([]byte, bool) {
 		return nil, false
 	}
 	return decoded, true
+}
+
+func HasSpecificCase(text string, checkFunc func(rune) bool) bool {
+	if checkFunc == nil {
+		return false
+	}
+
+	for _, char := range text {
+		if checkFunc(char) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// HasLowerCase 判断字符串是否包含小写字母
+func HasLowerCase(text string) bool {
+	return HasSpecificCase(text, unicode.IsLower)
+}
+
+// HasUpperCase 判断字符串是否包含大写字母
+func HasUpperCase(text string) bool {
+	return HasSpecificCase(text, unicode.IsUpper)
+}
+
+// SetMultipleMetaData 封装设置ServerMetaData的重复模式
+// 用于同时设置SpaceID和Uin，避免重复代码
+func SetMultipleMetaData(ctx context.Context, spaceID, uin string) context.Context {
+	newCtx := contextx.SetServerMetaData(ctx, contextx.MDSpaceID, spaceID)
+	newCtx = contextx.SetServerMetaData(newCtx, contextx.MDUin, uin)
+	return newCtx
 }

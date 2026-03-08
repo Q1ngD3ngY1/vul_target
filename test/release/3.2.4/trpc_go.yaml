@@ -1,0 +1,111 @@
+server:
+  app: adp
+  server: kb-config
+  filter:
+    - recovery
+    - i18n-adp
+    - validation
+    - accesslog
+    - debuglog
+    - galileo
+    - cle-route-propagator
+  stream_filter:
+    - galileo
+  admin:
+    nic: eth1
+    port: 8081
+  service:
+    - name: trpc.adp.kb_config.Admin
+      ip: ${POD_IP}
+      port: 9090 # 服务监听端口
+      network: tcp # 网络监听类型 tcp/udp
+      protocol: trpc # 应用层协议 trpc/restful
+      timeout: 120000 # 请求最长处理时间，单位毫秒
+      filter:
+        - session
+        - permission
+        - actionLog
+    - name: trpc.adp.kb_config.Api
+      ip: ${POD_IP}
+      port: 9092 # 服务监听端口
+      network: tcp # 网络监听类型 tcp/udp
+      protocol: trpc # 应用层协议 trpc/restful
+      timeout: 25000 # 请求最长处理时间，单位毫秒
+    - name: trpc.adp.kb_config.QASimilarTask #service的路由名称,
+      nic: eth1 #网卡 ipport配置二选一，主要用于分布式定时器的互斥
+      port: 9094 #服务监听端口 可使用占位符 ${port}
+      network: "*/5 * * * * *?scheduler=QASimilarTask&holdTime=5"
+      protocol: timer #应用层协议
+      timeout: 600000 # 请求最长处理时间，单位毫秒
+    - name: trpc.adp.kb_config.DeleteCharSizeExceededTask #service的路由名称,
+      nic: eth1 #网卡 ipport配置二选一，主要用于分布式定时器的互斥
+      port: 9098 #服务监听端口 可使用占位符 ${port}
+      network: "0 0 2 * * *?scheduler=DeleteCharSizeExceededTask&holdTime=5"
+      protocol: timer #应用层协议
+      timeout: 3600000 # 请求最长处理时间，单位毫秒
+    - name: trpc.adp.kb_config.CleanVectorSyncHistoryTask #service的路由名称,
+      nic: eth1 #网卡 ipport配置二选一，主要用于分布式定时器的互斥
+      port: 9099 #服务监听端口 可使用占位符 ${port}
+      network: "0 0 */10 * * *?scheduler=CleanVectorSyncHistoryTask&holdTime=5"
+      protocol: timer #应用层协议
+      timeout: 3600000 # 请求最长处理时间，单位毫秒
+    - name: trpc.adp.kb_config.UpdateAttributeLabelsTaskPreview #service的路由名称,
+      nic: eth1 #网卡 ipport配置二选一，主要用于分布式定时器的互斥
+      port: 9101 #服务监听端口 可使用占位符 ${port}
+      # 定时器cron表达式: [second minute hour day month weekday]
+      network: "0 0 * * * *?scheduler=UpdateAttributeLabelsTaskPreview&holdTime=5"
+      protocol: timer #应用层协议
+      timeout: 3000000 # 请求最长处理时间，单位毫秒
+    - name: trpc.adp.kb_config.UpdateAttributeLabelsTaskProd #service的路由名称,
+      nic: eth1 #网卡 ipport配置二选一，主要用于分布式定时器的互斥
+      port: 9102 #服务监听端口 可使用占位符 ${port}
+      # 定时器cron表达式: [second minute hour day month weekday]
+      network: "0 0 * * * *?scheduler=UpdateAttributeLabelsTaskProd&holdTime=5"
+      protocol: timer #应用层协议
+      timeout: 3000000 # 请求最长处理时间，单位毫秒
+    - name: trpc.adp.kb_config.CleanDatabaseCommonData #service的路由名称,
+      nic: eth1 #网卡 ipport配置二选一，主要用于分布式定时器的互斥
+      port: 9103 #服务监听端口 可使用占位符 ${port}
+      # 定时器cron表达式: [second minute hour day month weekday]
+      network: "0 */1 * * * *?scheduler=CleanDatabaseCommonData&holdTime=5"
+      protocol: timer #应用层协议
+      timeout: 3000000 # 请求最长处理时间，单位毫秒
+    - name: trpc.adp.kb_config.AutoDocRefresh #service的路由名称,
+      nic: eth1 #网卡 ipport配置二选一，主要用于分布式定时器的互斥
+      port: 9104 #服务监听端口 可使用占位符 ${port}
+      # 定时器cron表达式: [second minute hour day month weekday]
+      network: "0 0 1 * * *?scheduler=AutoDocRefresh&holdTime=5"
+      protocol: timer #应用层协议
+      timeout: 900000 # 请求最长处理时间，单位毫秒
+
+plugins:                                          #插件配置
+  config:
+    rainbow: # 七彩石配置中心
+      providers:
+        - name: rainbow
+          appid: 3f090873-420d-4575-b9d2-cf6a72980a33 # appid
+          group: kb-config
+          type: kv   # 七彩石数据格式, kv(默认), table
+          env_name: formal
+          enable_client_provider: true
+          timeout: 2000
+        - name: rainbow-raven # 公共库配置
+          appid: 58c7c4a8-5c57-440d-9e99-1fea2cf83e43 # appid
+          group: raven # 配置所属组
+          type: kv   # 七彩石数据格式, kv(默认), table
+          env_name: formal
+          timeout: 2000
+        - name: internal-ip # 内网IP网段
+          appid: 07f5f3ff-e7c5-4737-8726-572b5bd7df30
+          group: Public.ipv4 # 配置所属组
+          type: kv   # 七彩石数据格式, kv(默认), table
+          env_name: Default
+          enable_sign: true
+          user_id: 省略
+          user_key: 省略
+          timeout: 2000
+
+  selector: #针对用户自定义的selector的配置
+    polaris: #针对polaris整体api的内部配置
+      protocol: grpc
+      enable_trans_meta: true

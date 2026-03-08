@@ -1,0 +1,25 @@
+-- 数据库表更记录：
+CREATE TABLE `t_corp_cos_doc` (
+                                  `id` bigint NOT NULL AUTO_INCREMENT,
+                                  `business_id` bigint NOT NULL COMMENT '对外ID',
+                                  `corp_id` bigint NOT NULL COMMENT '企业ID',
+                                  `robot_id` bigint NOT NULL COMMENT '机器人ID',
+                                  `staff_id` bigint NOT NULL DEFAULT '0' COMMENT '员工ID',
+                                  `cos_bucket` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '用户COS存储桶',
+                                  `cos_path` varchar(2048) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '用户COS文件路径',
+                                  `cos_hash` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '用户COS文件路径',
+                                  `cos_tag` varchar(255) COLLATE utf8mb4_general_ci NOT NULL COMMENT '用户COS文件Tag',
+                                  `is_deleted` tinyint NOT NULL DEFAULT '0' COMMENT '客户文件是否删除 0未删除 1已删除',
+                                  `status` int NOT NULL COMMENT '状态(0未知状态 1排队中 2上传中 3上传失败 4上传取消 11源文件不存在 12目标文件已存在 100 上传成功',
+                                  `fail_reason` varchar(1024) COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '生成失败原因',
+                                  `sync_time` datetime NOT NULL DEFAULT '1970-01-01 08:00:00' COMMENT '同步时间',
+                                  `business_cos_url` varchar(1024) COLLATE utf8mb4_general_ci NOT NULL COMMENT '业务cos文件地址',
+                                  `business_cos_hash` varchar(255) COLLATE utf8mb4_general_ci NOT NULL COMMENT '业务x-cos-hash-crc64ecma 头部中的 CRC64编码进行校验上传到云端的文件和本地文件的一致性',
+                                  `business_cos_tag` varchar(128) COLLATE utf8mb4_general_ci NOT NULL COMMENT '业务cos tag',
+                                  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                                  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                                  PRIMARY KEY (`id`),
+                                  UNIQUE KEY `uni_biz_id` (`business_id`) USING BTREE,
+                                  KEY `idx_corp` (`corp_id`,`cos_hash`) USING BTREE,
+                                  KEY `idx_robot` (`robot_id`) USING BTREE
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户cos文档表';

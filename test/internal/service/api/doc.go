@@ -2,58 +2,36 @@ package api
 
 import (
 	"context"
-	"git.code.oa.com/trpc-go/trpc-go/log"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/config"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/model"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/util"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg/errs"
-	utilConfig "git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/util/config"
-	pb "git.woa.com/dialogue-platform/lke_proto/pb-protocol/bot_knowledge_config_server"
+
+	"git.woa.com/adp/common/x/contextx"
+	"git.woa.com/adp/common/x/logx"
+	"git.woa.com/adp/kb/kb-config/internal/config"
+	"git.woa.com/adp/kb/kb-config/internal/entity"
+	cateEntity "git.woa.com/adp/kb/kb-config/internal/entity/category"
+	docEntity "git.woa.com/adp/kb/kb-config/internal/entity/document"
+	attrEntity "git.woa.com/adp/kb/kb-config/internal/entity/label"
+	qaEntity "git.woa.com/adp/kb/kb-config/internal/entity/qa"
+	releaseEntity "git.woa.com/adp/kb/kb-config/internal/entity/release"
+	"git.woa.com/adp/kb/kb-config/internal/util"
+	"git.woa.com/adp/kb/kb-config/pkg/errs"
+	pb "git.woa.com/adp/pb-go/kb/kb_config"
 )
 
-// GetDocs 获取文档内容
-func (s *Service) GetDocs(ctx context.Context, req *pb.GetDocsReq) (*pb.GetDocsRsp, error) {
-	log.ErrorContextf(ctx, "准备删除的接口收到了请求 deprecated interface req:%+v", req)
-	rsp := new(pb.GetDocsRsp)
-	return rsp, nil
-}
-
-// DeleteDocSegmentImages 删除文档切片图片 -- 仅vector服务调用
-func (s *Service) DeleteDocSegmentImages(ctx context.Context, req *pb.DeleteDocSegmentImagesReq) (
-	rsp *pb.DeleteDocSegmentImagesRsp, err error) {
-	log.ErrorContextf(ctx, "准备删除的接口收到了请求 deprecated interface req:%+v", req)
-
-	log.InfoContextf(ctx, "DeleteDocSegmentImages|callesd|req:%+v", req)
-	err = s.dao.DeleteSegmentImages(ctx, req.GetRobotId(), req.GetDocIds())
-	if err != nil {
-		log.ErrorContextf(ctx, "DeleteDocSegmentImages|failed|err:%+v", err)
-		return nil, err
-	}
-	return rsp, nil
-}
-
 // InnerDescribeDocs 批量获取文档详情（内部接口）
-func (s *Service) InnerDescribeDocs(ctx context.Context, req *pb.InnerDescribeDocsReq) (
-	*pb.InnerDescribeDocsRsp, error) {
-	log.InfoContextf(ctx, "InnerDescribeDocs Req:%+v", req)
-	corpID := pkg.CorpID(ctx)
-	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
+func (s *Service) InnerDescribeDocs(ctx context.Context, req *pb.InnerDescribeDocsReq) (*pb.InnerDescribeDocsRsp, error) {
+	logx.I(ctx, "InnerDescribeDocs Req:%+v", req)
+	app, err := s.svc.DescribeAppByScene(ctx, req.GetBotBizId(), entity.AppTestScenes)
 	if err != nil {
 		return nil, err
-	}
-	app, err := s.getAppByAppBizID(ctx, botBizID)
-	if err != nil {
-		return nil, errs.ErrRobotNotFound
 	}
 	docBizIDs, err := util.BatchCheckReqParamsIsUint64(ctx, req.GetDocBizIds())
 	if err != nil {
 		return nil, err
 	}
-	if len(docBizIDs) > utilConfig.GetMainConfig().BatchInterfaceLimit.GeneralMaxLimit {
+	if len(docBizIDs) > config.GetMainConfig().BatchInterfaceLimit.GeneralMaxLimit {
 		return nil, errs.ErrDescribeDocLimit
 	}
-	docs, err := s.dao.GetDocByBizIDs(ctx, docBizIDs, app.ID)
+	docs, err := s.docLogic.GetDocByBizIDs(ctx, docBizIDs, app.PrimaryId)
 	if err != nil || len(docs) == 0 {
 		return nil, errs.ErrDocNotFound
 	}
@@ -62,23 +40,23 @@ func (s *Service) InnerDescribeDocs(ctx context.Context, req *pb.InnerDescribeDo
 		docIDs = append(docIDs, doc.ID)
 		cateIDs = append(cateIDs, uint64(doc.CategoryID))
 	}
-	qaNums, err := s.dao.GetDocQANum(ctx, corpID, app.ID, docIDs)
+	qaNums, err := s.qaLogic.GetDocQANum(ctx, app.CorpPrimaryId, app.PrimaryId, docIDs)
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
-	pendingDoc, err := s.getPendingDoc(ctx, app.ID)
+	pendingDoc, err := s.getPendingDoc(ctx, app.PrimaryId)
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
-	latestRelease, err := s.dao.GetLatestRelease(ctx, corpID, app.ID)
+	latestRelease, err := s.releaseLogic.GetLatestRelease(ctx, app.CorpPrimaryId, app.PrimaryId)
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
-	mapDocID2AttrLabels, err := s.dao.GetDocAttributeLabelDetail(ctx, app.ID, docIDs)
+	mapDocID2AttrLabels, err := s.labelLogic.GetDocAttributeLabelDetail(ctx, app.PrimaryId, docIDs)
 	if err != nil {
 		return nil, errs.ErrSystem
 	}
-	cateMap, err := s.dao.GetCateByIDs(ctx, model.DocCate, cateIDs)
+	cateMap, err := s.cateLogic.DescribeCateByIDs(ctx, cateEntity.DocCate, cateIDs)
 	if err != nil {
 		return nil, errs.ErrCateNotFound
 	}
@@ -89,8 +67,8 @@ func (s *Service) InnerDescribeDocs(ctx context.Context, req *pb.InnerDescribeDo
 
 // getPendingDoc 获取发布中的文档
 func (s *Service) getPendingDoc(ctx context.Context, robotID uint64) (map[uint64]struct{}, error) {
-	corpID := pkg.CorpID(ctx)
-	latestRelease, err := s.dao.GetLatestRelease(ctx, corpID, robotID)
+	corpID := contextx.Metadata(ctx).CorpID()
+	latestRelease, err := s.releaseLogic.GetLatestRelease(ctx, corpID, robotID)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +78,7 @@ func (s *Service) getPendingDoc(ctx context.Context, robotID uint64) (map[uint64
 	if latestRelease.IsPublishDone() {
 		return nil, nil
 	}
-	releaseDocs, err := s.dao.GetReleaseDoc(ctx, latestRelease)
+	releaseDocs, err := s.releaseLogic.GetReleaseDoc(ctx, latestRelease)
 	if err != nil {
 		return nil, err
 	}
@@ -108,9 +86,10 @@ func (s *Service) getPendingDoc(ctx context.Context, robotID uint64) (map[uint64
 }
 
 // getDocDetails 获取文档详情
-func getDocDetails(docs map[uint64]*model.Doc, qaNums map[uint64]map[uint32]uint32,
-	pendingDoc map[uint64]struct{}, latestRelease *model.Release, mapDocID2AttrLabels map[uint64][]*model.AttrLabel,
-	cateMap map[uint64]*model.CateInfo) []*pb.InnerDescribeDocsRsp_DocDetail {
+func getDocDetails(docs map[uint64]*docEntity.Doc, qaNums map[uint64]map[uint32]uint32,
+	pendingDoc map[uint64]struct{}, latestRelease *releaseEntity.Release,
+	mapDocID2AttrLabels map[uint64][]*attrEntity.AttrLabel,
+	cateMap map[uint64]*cateEntity.CateInfo) []*pb.InnerDescribeDocsRsp_DocDetail {
 	docDetails := make([]*pb.InnerDescribeDocsRsp_DocDetail, 0)
 	for _, doc := range docs {
 		_, ok := pendingDoc[doc.ID]
@@ -124,12 +103,12 @@ func getDocDetails(docs map[uint64]*model.Doc, qaNums map[uint64]map[uint32]uint
 			StatusDesc:     doc.StatusDesc(latestRelease.IsPublishPause()),
 			FileType:       doc.FileType,
 			IsRefer:        doc.IsRefer,
-			QaNum:          qaNums[doc.ID][model.QAIsNotDeleted],
+			QaNum:          qaNums[doc.ID][qaEntity.QAIsNotDeleted],
 			IsDeleted:      doc.HasDeleted(),
 			Source:         doc.Source,
 			SourceDesc:     doc.DocSourceDesc(),
 			IsAllowRestart: !ok && doc.IsAllowCreateQA(),
-			IsDeletedQa:    qaNums[doc.ID][model.QAIsNotDeleted] == 0 && qaNums[doc.ID][model.QAIsDeleted] != 0,
+			IsDeletedQa:    qaNums[doc.ID][qaEntity.QAIsNotDeleted] == 0 && qaNums[doc.ID][qaEntity.QAIsDeleted] != 0,
 			IsCreatingQa:   doc.IsCreatingQaV1(),
 			IsAllowDelete:  !ok && doc.IsAllowDelete(),
 			IsAllowRefer:   doc.IsAllowRefer(),
@@ -139,6 +118,9 @@ func getDocDetails(docs map[uint64]*model.Doc, qaNums map[uint64]map[uint32]uint
 			AttrRange:      doc.AttrRange,
 			AttrLabels:     fillPBAttrLabels(mapDocID2AttrLabels[doc.ID]),
 			DocId:          doc.ID,
+			FileSize:       doc.FileSize,
+			CosHash:        doc.CosHash,
+			WebUrl:         doc.WebURL,
 		}
 		if cate, ok := cateMap[uint64(doc.CategoryID)]; ok {
 			if cate != nil {
@@ -151,7 +133,7 @@ func getDocDetails(docs map[uint64]*model.Doc, qaNums map[uint64]map[uint32]uint
 }
 
 // fillPBAttrLabels 转成成PB的属性标签
-func fillPBAttrLabels(attrLabels []*model.AttrLabel) []*pb.AttrLabel {
+func fillPBAttrLabels(attrLabels []*attrEntity.AttrLabel) []*pb.AttrLabel {
 	list := make([]*pb.AttrLabel, 0)
 	for _, v := range attrLabels {
 		attrLabel := &pb.AttrLabel{

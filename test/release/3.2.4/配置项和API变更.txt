@@ -1,0 +1,20 @@
+
+1. 修改 error_zh-CN.json和error_en-US.json ErrOpenDbSourceFail 对应的错误提示信息
+连接外部数据库失败，请检查地址、端口、账户密码以及网络白名单配置等信息
+Database connection failed - check address/port/credentials/network whitelist configuration
+
+2. application.yaml -> db_source 下新增配置项：
+  proxy: xx:1080  # 替换为环境中具体的代理
+  proxy_user: proxyuser
+  proxy_pd: xxx  # 替换
+  proxy_effect_time: "2025-11-05 10:04:05" # 替换为上线时间
+
+3. 部署platform-eip-proxy
+
+4. 修改中英文错误码
+   KeyDatabaseTableInfo 中文修改为：
+   "KeyDatabaseTableInfo": "数据表不存在，数据库：%v，数据表：%v",
+   英文修改为：
+   "KeyDatabaseTableInfo":"Db table is not exist, db：%v，table：%v",
+
+5. rainbow 中删除了 db_source_decode_key 配置的 key，内容移动到了 application.yaml -> db_source -> db_source_decode_key

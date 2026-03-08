@@ -2,70 +2,29 @@ package api
 
 import (
 	"context"
-	"fmt"
+	"errors"
+	"time"
 
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/client"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/dao"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/linker"
-	"git.woa.com/dialogue-platform/common/v3/sync/errgroupx"
-	admin "git.woa.com/dialogue-platform/lke_proto/pb-protocol/bot_admin_config_server"
-	retrieval "git.woa.com/dialogue-platform/lke_proto/pb-protocol/bot_retrieval_server"
+	"git.woa.com/adp/common/x/contextx"
+	"git.woa.com/adp/common/x/logx"
+	"git.woa.com/adp/common/x/syncx/errgroupx"
+	"git.woa.com/adp/kb/kb-config/internal/async/scheduler"
+	"git.woa.com/adp/kb/kb-config/internal/entity"
+	docEntity "git.woa.com/adp/kb/kb-config/internal/entity/document"
+	qaEntity "git.woa.com/adp/kb/kb-config/internal/entity/qa"
+	segEntity "git.woa.com/adp/kb/kb-config/internal/entity/segment"
+	"git.woa.com/adp/kb/kb-config/internal/util"
+	"git.woa.com/adp/kb/kb-config/internal/util/linker"
+	"git.woa.com/adp/kb/kb-config/pkg/errs"
+	pb "git.woa.com/adp/pb-go/kb/kb_config"
+	retrieval "git.woa.com/adp/pb-go/kb/kb_retrieval"
 	"github.com/spf13/cast"
-
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/util"
-
-	"git.code.oa.com/trpc-go/trpc-go/log"
-	appImpl "git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/app"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/model"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg/errs"
-	pb "git.woa.com/dialogue-platform/lke_proto/pb-protocol/bot_knowledge_config_server"
 )
 
-// getAppByAppBizID 通过业务ID获取应用详情
-func (s *Service) getAppByAppBizID(ctx context.Context, businessID uint64) (*model.App, error) {
-	appDB, err := s.dao.GetAppByAppBizID(ctx, businessID)
-	if err != nil {
-		return nil, err
-	}
-	if appDB == nil {
-		return nil, errs.ErrAppNotFound
-	}
-	if appDB.HasDeleted() {
-		return nil, errs.ErrAppNotFound
-	}
-	instance := appImpl.GetApp(appDB.AppType)
-	if instance == nil {
-		return nil, errs.ErrAppTypeInvalid
-	}
-	app, err := instance.AnalysisDescribeApp(ctx, appDB)
-	if err != nil {
-		return nil, errs.ErrSystem
-	}
-	corpID := pkg.CorpID(ctx)
-	if corpID != 0 && corpID != appDB.CorpID {
-		log.WarnContextf(ctx, "当前企业与应用归属企业不一致 corpID:%d robot:%+v", corpID, appDB)
-		return nil, errs.ErrAppNotFound
-	}
-	corp, err := s.dao.GetCorpByID(ctx, appDB.CorpID)
-	if err != nil {
-		return nil, errs.ErrRobotNotFound
-	}
-	if !corp.IsValid() {
-		return nil, errs.ErrCorpInValid
-	}
-	if err = s.dao.CreateAppVectorIndex(ctx, appDB); err != nil {
-		return nil, errs.ErrAppInitFail
-	}
-	return app, nil
-}
-
-func (s *Service) getPreviewRspDocByApp(
-	ctx context.Context, _ *admin.GetAppInfoRsp, docs []*retrieval.SearchVectorRsp_Doc, robotID uint64,
-) ([]*pb.SearchPreviewRsp_Doc, error) {
-	linkContents, err := s.dao.GetLinkContentsFromSearchVectorResponse(
+func (s *Service) getPreviewRspDocByApp(ctx context.Context, docs []*retrieval.SearchVectorRsp_Doc, robotID uint64) ([]*pb.SearchPreviewRsp_Doc, error) {
+	linkContents, err := s.docLogic.GetLinkContentsFromSearchVectorResponse(
 		ctx, robotID, docs,
-		func(doc *retrieval.SearchVectorRsp_Doc, qa *model.DocQA) any {
+		func(doc *retrieval.SearchVectorRsp_Doc, qa *qaEntity.DocQA) any {
 			return &pb.SearchPreviewRsp_Doc{
 				DocId:                qa.DocID,
 				DocType:              doc.GetDocType(),
@@ -82,7 +41,7 @@ func (s *Service) getPreviewRspDocByApp(
 				SimilarQuestionExtra: convertSimilarQuestionExtraForVector(doc.GetSimilarQuestionExtra()),
 			}
 		},
-		func(doc *retrieval.SearchVectorRsp_Doc, segment *model.DocSegmentExtend) any {
+		func(doc *retrieval.SearchVectorRsp_Doc, segment *segEntity.DocSegmentExtend) any {
 			return &pb.SearchPreviewRsp_Doc{
 				DocId:        segment.DocID,
 				DocType:      doc.GetDocType(),
@@ -112,17 +71,16 @@ func (s *Service) getPreviewRspDocByApp(
 	if err != nil {
 		return nil, err
 	}
-	return dao.Link(ctx, linkContents, func(t *pb.SearchPreviewRsp_Doc, v linker.Content) *pb.SearchPreviewRsp_Doc {
+	return linker.Link(ctx, linkContents, func(t *pb.SearchPreviewRsp_Doc, v linker.Content) *pb.SearchPreviewRsp_Doc {
 		t.OrgData = v.Value
 		return t
 	}), nil
 }
 
 // GetRobotRetrievalConfig 获取机器人检索配置
-func (s *Service) GetRobotRetrievalConfig(ctx context.Context, req *pb.GetRobotRetrievalConfigReq) (
-	*pb.GetRobotRetrievalConfigRsp, error) {
+func (s *Service) GetRobotRetrievalConfig(ctx context.Context, req *pb.GetRobotRetrievalConfigReq) (*pb.GetRobotRetrievalConfigRsp, error) {
 	rsp := new(pb.GetRobotRetrievalConfigRsp)
-	retrievalConfig, err := s.dao.GetRetrievalConfig(ctx, req.GetRobotId())
+	retrievalConfig, err := s.kbLogic.DescribeRetrievalConfigCache(ctx, req.GetRobotId())
 	if err != nil {
 		return rsp, err
 	}
@@ -139,7 +97,7 @@ func (s *Service) GetRobotRetrievalConfig(ctx context.Context, req *pb.GetRobotR
 		QaVecRecallNum:     retrievalConfig.QaVecRecallNum,
 		EsRecallNum:        retrievalConfig.EsRecallNum,
 		EsRerankMinNum:     retrievalConfig.EsReRankMinNum,
-		RrfReciprocalConst: retrievalConfig.RRFReciprocalConst,
+		RrfReciprocalConst: int32(retrievalConfig.RRFReciprocalConst),
 		EsTopN:             retrievalConfig.EsTopN,
 		Text2SqlModel:      retrievalConfig.Text2sqlModel,
 		Text2SqlPrompt:     retrievalConfig.Text2sqlPrompt,
@@ -148,26 +106,28 @@ func (s *Service) GetRobotRetrievalConfig(ctx context.Context, req *pb.GetRobotR
 }
 
 // SaveRobotRetrievalConfig 保存机器人检索配置
-func (s *Service) SaveRobotRetrievalConfig(ctx context.Context, req *pb.SaveRobotRetrievalConfigReq) (
-	*pb.SaveRobotRetrievalConfigRsp, error) {
+func (s *Service) SaveRobotRetrievalConfig(ctx context.Context, req *pb.SaveRobotRetrievalConfigReq) (*pb.SaveRobotRetrievalConfigRsp, error) {
 	rsp := new(pb.SaveRobotRetrievalConfigRsp)
-	retrievalConfig := convertToRetrievalConfig(req.GetSettings())
+	retrievalConfig := convertToRetrievalConfig(req.GetRobotId(), req.GetSettings())
 	if !retrievalConfig.IsCheckRetrievalConfig() {
 		return rsp, errs.ErrRetrievalConfig
 	}
-	log.InfoContextf(ctx, "SaveRobotRetrievalConfig:%v", retrievalConfig)
-	err := s.dao.SaveRetrievalConfig(ctx, req.GetRobotId(), retrievalConfig, req.GetSettings().Operator)
+	logx.I(ctx, "SaveRobotRetrievalConfig:%v", retrievalConfig)
+	err := s.kbLogic.ModifyRetrievalConfig(ctx, &retrievalConfig)
+	// err := s.dao.SaveRetrievalConfig(ctx, req.GetRobotId(), retrievalConfig, req.GetSettings().Operator)
 	if err != nil {
 		return rsp, err
 	}
 	return rsp, nil
 }
 
-func convertToRetrievalConfig(settings *pb.RobotRetrievalConfig) model.RetrievalConfig {
+func convertToRetrievalConfig(robotID uint64, settings *pb.RobotRetrievalConfig) entity.RetrievalConfig {
 	if settings == nil {
-		return model.RetrievalConfig{}
+		return entity.RetrievalConfig{}
 	}
-	return model.RetrievalConfig{
+	now := time.Now()
+	return entity.RetrievalConfig{
+		RobotID:            robotID,
 		EnableEsRecall:     settings.GetEnableEsRecall(),
 		EnableVectorRecall: settings.GetEnableVectorRecall(),
 		EnableRrf:          settings.GetEnableRrf(),
@@ -180,180 +140,153 @@ func convertToRetrievalConfig(settings *pb.RobotRetrievalConfig) model.Retrieval
 		QaVecRecallNum:     settings.GetQaVecRecallNum(),
 		EsRecallNum:        settings.GetEsRecallNum(),
 		EsReRankMinNum:     settings.GetEsRerankMinNum(),
-		RRFReciprocalConst: settings.GetRrfReciprocalConst(),
+		RRFReciprocalConst: uint32(settings.GetRrfReciprocalConst()),
+		Operator:           settings.GetOperator(),
+		CreateTime:         now,
+		UpdateTime:         now,
 		EsTopN:             settings.GetEsTopN(),
 		Text2sqlModel:      settings.GetText2SqlModel(),
 		Text2sqlPrompt:     settings.GetText2SqlPrompt(),
 	}
 }
 
-// CheckVarIsUsed 检查自定义参数是否被使用
-func (s *Service) CheckVarIsUsed(ctx context.Context, req *pb.CheckVarIsUsedReq) (
-	*pb.CheckVarIsUsedRsp, error) {
-	log.ErrorContextf(ctx, "准备删除的接口收到了请求 deprecated interface req:%+v", req)
-	rsp := new(pb.CheckVarIsUsedRsp)
-	return rsp, nil
-}
-
-// ModifyAppVar 修改应用检索范围自定义参数
-func (s *Service) ModifyAppVar(ctx context.Context, req *pb.ModifyAppVarReq) (
-	*pb.ModifyAppVarRsp, error) {
-	log.ErrorContextf(ctx, "准备删除的接口收到了请求 deprecated interface req:%+v", req)
-	rsp := new(pb.ModifyAppVarRsp)
-	return rsp, nil
-}
-
-// modifyAppSearchRange 修改应用检索范围数据
-func (s *Service) modifyAppSearchRange(ctx context.Context, app *model.App, varInfo *pb.ModifyAppVarReqVarInfo, attribute *model.Attribute) error {
-	changed, err := fillAppPreview(app, varInfo, attribute)
-	if err != nil {
-		return err
-	}
-	if changed {
-		err = s.dao.ModifyAppPreviewJSON(ctx, app.ToDB())
-		if err != nil {
-			log.WarnContextf(ctx, "ModifyAppVar ModifyAppPreviewJSON err:%+v", err)
-			return err
-		}
-	}
-	return nil
-}
-
-// fillAppPreview 填充 app preview 数据
-func fillAppPreview(app *model.App, varInfo *pb.ModifyAppVarReqVarInfo, attribute *model.Attribute) (bool, error) {
-	var changed bool
-	if app.AppType != model.KnowledgeQaAppType {
-		return changed, nil
-	}
-	if varInfo != nil {
-		if _, ok := app.PreviewDetails.AppConfig.KnowledgeQaConfig.SearchRange.APIVarMap[varInfo.VarId]; ok {
-			app.PreviewDetails.AppConfig.KnowledgeQaConfig.SearchRange.APIVarMap[varInfo.VarId] = varInfo.VarName
-			changed = true
-		}
-	}
-	if attribute != nil {
-		if _, ok := app.PreviewDetails.AppConfig.KnowledgeQaConfig.SearchRange.LabelAttrMap[attribute.BusinessID]; ok {
-			app.PreviewDetails.AppConfig.KnowledgeQaConfig.SearchRange.LabelAttrMap[attribute.BusinessID] = attribute.Name
-			changed = true
-		}
-	}
-	return changed, nil
-}
-
 // ClearAppKnowledgeResource 应用被删除回调，用来延迟（n小时/天后）清理应用知识库资源（文档、问答等）
-func (s *Service) ClearAppKnowledgeResource(ctx context.Context, req *pb.ClearAppKnowledgeResourceReq) (
-	*pb.ClearAppKnowledgeResourceRsp, error) {
-	log.InfoContextf(ctx, "ClearAppKnowledgeResource Req:%+v", req)
+func (s *Service) ClearAppKnowledgeResource(ctx context.Context, req *pb.ClearAppKnowledgeResourceReq) (*pb.ClearAppKnowledgeResourceRsp, error) {
+	logx.I(ctx, "ClearAppKnowledgeResource Req:%+v", req)
+	rsp := new(pb.ClearAppKnowledgeResourceRsp)
 	botBizID, err := util.CheckReqBotBizIDUint64(ctx, req.GetBotBizId())
 	if err != nil {
 		return nil, err
 	}
-	appInfo, err := client.GetAppInfo(ctx, botBizID, model.AppTestScenes)
-	if err != nil && !errs.Is(err, errs.ErrRobotNotFound) {
-		return nil, err
+	app, err := s.rpc.AppAdmin.DescribeAppById(ctx, botBizID)
+	if (err != nil && !errs.Is(err, errs.ErrRobotNotFound)) || (app != nil && !app.IsDeleted) {
+		// 如果未返回robot不存在的错误码，或者app不是已删除的状态，但则不能清理资源，返回错误
+		logx.E(ctx, "ClearAppKnowledgeResource appBizId:%s is not deleted", req.BotBizId)
+		return rsp, errs.ErrSystem
 	}
-	if appInfo != nil && !appInfo.GetIsDelete() {
-		return nil, fmt.Errorf("robot:%d not exits", botBizID)
+	if app == nil && (req.CorpPrimaryId == 0 || req.AppPrimaryId == 0) {
+		logx.E(ctx, "ClearAppKnowledgeResource appBizId:%s is deleted, but corpPrimaryId or appPrimaryId is empty", req.BotBizId)
+		return rsp, errs.ErrParameterInvalid
 	}
-	if err = s.dao.CreateKnowledgeDeleteTask(ctx, model.KnowledgeDeleteParams{
-		Name:    model.TaskTypeNameMap[model.KnowledgeDeleteTask],
-		RobotID: req.GetAppPrimaryId(),
-		CorpID:  req.GetCorpPrimaryId(),
-		TaskID:  req.GetTaskId(),
+	if app != nil {
+		// 如果app能正常查到，则使用app的信息，否则使用传入的信息
+		req.CorpPrimaryId = app.CorpPrimaryId
+		req.AppPrimaryId = app.PrimaryId
+	}
+
+	if err = s.kbDao.CreateKnowledgeDeleteTask(ctx, entity.KnowledgeDeleteParams{
+		Name:     entity.TaskTypeNameMap[entity.KnowledgeDeleteTask],
+		RobotID:  req.AppPrimaryId,
+		CorpID:   req.CorpPrimaryId,
+		AppBizID: botBizID,
+		TaskID:   req.GetTaskId(),
 	}); err != nil {
-		log.ErrorContextf(ctx, "ClearAppKnowledgeResource CreateKnowledgeDeleteTask err:%+v", err)
+		logx.E(ctx, "ClearAppKnowledgeResource CreateKnowledgeDeleteTask err:%+v", err)
 		return nil, err
 	}
 	return &pb.ClearAppKnowledgeResourceRsp{}, nil
 }
 
 // AppDeletedCallback 应用被删除回调，用来停止异步任务（解析、审核、学习等），释放资源
+// NOTE(ericjwang): 调用路径：/trpc.KEP.bot_admin_config_server.Admin/DeleteApp -> here，峰值 QPS 约为 1
 func (s *Service) AppDeletedCallback(ctx context.Context, req *pb.AppDeletedCallbackReq) (*pb.AppDeletedCallbackRsp, error) {
-	log.InfoContextf(ctx, "AppDeletedCallback req:%+v", req)
+	logx.I(ctx, "AppDeletedCallback req:%+v", req)
 	rsp := &pb.AppDeletedCallbackRsp{}
 	corpBizID, err := cast.ToUint64E(req.GetCorpBizId())
 	if err != nil {
+		logx.E(ctx, "AppDeletedCallback corpBizID:%+v err:%+v", req.GetCorpBizId(), err)
 		return nil, err
 	}
-	corpID, err := dao.GetCorpIDByCorpBizID(ctx, corpBizID)
+	corp, err := s.rpc.PlatformAdmin.DescribeCorpByBizId(ctx, corpBizID)
+	// corpID, err := dao.GetCorpIDByCorpBizID(ctx, corpBizID)
 	if err != nil {
+		logx.E(ctx, "AppDeletedCallback corpBizID:%+v err:%+v", corpBizID, err)
 		return nil, err
 	}
 	appBizID, err := cast.ToUint64E(req.GetAppBizId())
 	if err != nil {
+		logx.E(ctx, "AppDeletedCallback appBizID:%+v err:%+v", req.GetAppBizId(), err)
 		return nil, err
 	}
-	appID, err := dao.GetAppIDByAppBizID(ctx, appBizID)
+	appID, err := s.cacheLogic.GetAppPrimaryIdByBizId(ctx, appBizID)
 	if err != nil {
+		if errors.Is(err, errs.ErrAppNotFound) {
+			logx.W(ctx, "AppDeletedCallback appBizId:%d app not found, skip", appBizID)
+			return rsp, nil
+		}
 		return nil, err
 	}
 	// 查询该应用下所有的解析任务
-	filter := &dao.DocParseFilter{
-		CorpID:  corpID,
-		RobotID: appID,
-		Status:  []int32{model.DocParseIng},
+	filter := &docEntity.DocParseFilter{
+		CorpPrimaryId: corp.GetCorpPrimaryId(),
+		AppPrimaryId:  appID,
+		Status:        []int32{docEntity.DocParseIng},
 	}
-	selectColumns := []string{dao.DocParseTblColTaskID}
-	docParseList, err := dao.GetDocParseDao().GetDocParseList(ctx, selectColumns, filter)
+	selectColumns := []string{docEntity.DocParseTblColTaskID}
+	docParseList, err := s.docLogic.GetDocParseList(ctx, selectColumns, filter)
 	if err != nil {
 		return nil, err
 	}
 	if len(docParseList) == 0 {
 		return rsp, nil
 	}
-	requestID := pkg.RequestID(ctx)
+	requestID := contextx.Metadata(ctx).RequestID()
 	// 停止解析任务
-	stopDocParseTaskWg := errgroupx.Group{}
+	stopDocParseTaskWg := errgroupx.New()
 	stopDocParseTaskWg.SetLimit(5)
 	for _, docParse := range docParseList {
-		log.DebugContextf(ctx, "AppDeletedCallback appBizId:%d StopDocParseTask taskID:%s",
-			appBizID, docParse.TaskID)
+		logx.D(ctx, "AppDeletedCallback appBizId:%d StopDocParseTask taskID:%s", appBizID, docParse.TaskID)
 		oneTask := docParse
 		stopDocParseTaskWg.Go(func() error {
-			err := client.StopDocParseTask(ctx, oneTask.TaskID, requestID, appBizID)
+			err := s.rpc.FileManager.StopDocParseTask(ctx, oneTask.TaskID, requestID, appBizID)
 			if err != nil {
-				log.WarnContextf(ctx, "AppDeletedCallback appBizId:%d StopDocParseTask taskID:%s err:%v",
-					appBizID, oneTask.TaskID, err)
+				logx.W(ctx, "AppDeletedCallback appBizId:%d StopDocParseTask taskID:%s err:%v", appBizID, oneTask.TaskID, err)
 			}
 			return nil
 		})
 	}
 	if err = stopDocParseTaskWg.Wait(); err != nil {
-		log.WarnContextf(ctx, "AppDeletedCallback appBizId:%d StopDocParseTask len(docParseList):%d err:%v",
-			appBizID, len(docParseList), err)
+		logx.W(ctx, "AppDeletedCallback appBizId:%d StopDocParseTask len(docParseList):%d err:%v", appBizID, len(docParseList), err)
 	}
 
 	// 停止所有所有执行中的任务（审核中，学习中）
-	tasks, err := dao.GetTasksByAppID(ctx, appID)
+	tasks, err := scheduler.GetTasksByAppID(ctx, appID)
 	if err != nil {
 		return nil, err
 	}
 	if len(tasks) == 0 {
 		return rsp, nil
 	}
-	stopTaskWg := errgroupx.Group{}
+	stopTaskWg := errgroupx.New()
 	stopTaskWg.SetLimit(5)
 	for _, task := range tasks {
-		if task.Type == model.DocDeleteTask {
+		logx.D(ctx, "AppDeletedCallback appBizId:%d taskType:%d taskID:%d", appBizID, task.Type, task.ID)
+		if task.Type == entity.DocDeleteTask {
 			// 文档删除异步任务不能停止，因为文档删除异步任务需要调用retrieval服务接口清理数据
 			continue
 		}
-		log.DebugContextf(ctx, "AppDeletedCallback appBizId:%d StopTask taskType:%d taskID:%d",
-			appBizID, task.Type, task.ID)
+		logx.D(ctx, "AppDeletedCallback appBizId:%d StopTask taskType:%d taskID:%d", appBizID, task.Type, task.ID)
 		oneTask := task
 		stopTaskWg.Go(func() error {
-			err := dao.StopTask(ctx, oneTask.ID)
+			err := scheduler.StopTask(ctx, oneTask.ID)
 			if err != nil {
-				log.WarnContextf(ctx, "AppDeletedCallback appBizId:%d StopTask taskID:%d err:%v",
-					appBizID, oneTask.ID, err)
+				logx.W(ctx, "AppDeletedCallback appBizId:%d StopTask taskID:%d err:%v", appBizID, oneTask.ID, err)
 			}
 			return nil
 		})
 	}
 	if err = stopTaskWg.Wait(); err != nil {
-		log.WarnContextf(ctx, "AppDeletedCallback appBizId:%d StopTask len(tasks):%d err:%v",
-			appBizID, len(tasks), err)
+		logx.W(ctx, "AppDeletedCallback appBizId:%d StopTask len(tasks):%d err:%v", appBizID, len(tasks), err)
 	}
 
 	return rsp, nil
+}
+
+// DescribrAppCharSize 获取应用的字符数
+func (s *Service) DescribeAppCharSize(ctx context.Context, req *pb.DescribeAppCharSizeReq) (*pb.DescribeAppCharSizeRsp, error) {
+	return s.svc.DescribeAppCharSize(ctx, req)
+}
+
+func (s *Service) ClearRealtimeAppResourceReleaseSegment(ctx context.Context, req *pb.ClearRealtimeAppResourceReleaseSegmentReq) (*pb.ClearRealtimeAppResourceReleaseSegmentRsp, error) {
+	return s.svc.ClearRealtimeAppResourceReleaseSegment(ctx, req)
 }

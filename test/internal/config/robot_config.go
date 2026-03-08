@@ -2,11 +2,10 @@ package config
 
 import (
 	"context"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg/errs"
 
-	"git.code.oa.com/trpc-go/trpc-go/log"
-	pb "git.woa.com/dialogue-platform/lke_proto/pb-protocol/bot_knowledge_config_server"
-	jsoniter "github.com/json-iterator/go"
+	"git.woa.com/adp/common/x/encodingx/jsonx"
+	"git.woa.com/adp/common/x/logx"
+	"git.woa.com/adp/kb/kb-config/pkg/errs"
 )
 
 const (
@@ -196,85 +195,85 @@ type RobotEmbedding struct {
 }
 
 // ToPB 转换为 *pb.RobotSplitDoc
-func (c RobotDocSplit) ToPB() map[string]*pb.RobotSplitDoc {
-	r := make(map[string]*pb.RobotSplitDoc)
-	for k, v := range c {
-		r[k] = &pb.RobotSplitDoc{
-			ParserConfig:          v.ParserConfig.ToPB(),
-			PatternSplitterConfig: v.PatternSplitterConfig.ToPB(),
-			SplitterConfig:        v.SplitterConfig.ToPB(),
-			MergerConfig:          v.MergerConfig.ToPB(),
-			RechunkConfig:         v.RechunkConfig.ToPB(),
-		}
-	}
-	return r
-}
+// func (c RobotDocSplit) ToPB() map[string]*pb.RobotSplitDoc {
+// 	r := make(map[string]*pb.RobotSplitDoc)
+// 	for k, v := range c {
+// 		r[k] = &pb.RobotSplitDoc{
+// 			ParserConfig:          v.ParserConfig.ToPB(),
+// 			PatternSplitterConfig: v.PatternSplitterConfig.ToPB(),
+// 			SplitterConfig:        v.SplitterConfig.ToPB(),
+// 			MergerConfig:          v.MergerConfig.ToPB(),
+// 			RechunkConfig:         v.RechunkConfig.ToPB(),
+// 		}
+// 	}
+// 	return r
+// }
 
 // ToPB 转换为 *pb.RobotSplitDocParserConfig
-func (c *ParserConfig) ToPB() *pb.RobotSplitDocParserConfig {
-	return &pb.RobotSplitDocParserConfig{SingleParagraph: c.SingleParagraph}
-}
+// func (c *ParserConfig) ToPB() *pb.RobotSplitDocParserConfig {
+// 	return &pb.RobotSplitDocParserConfig{SingleParagraph: c.SingleParagraph}
+// }
 
 // ToAppPB 转换为 *pb.AppSplitDocParserConfig
-func (c *ParserConfig) ToAppPB() *pb.AppSplitDocParserConfig {
-	return &pb.AppSplitDocParserConfig{SingleParagraph: c.SingleParagraph}
-}
+// func (c *ParserConfig) ToAppPB() *pb.AppSplitDocParserConfig {
+// 	return &pb.AppSplitDocParserConfig{SingleParagraph: c.SingleParagraph}
+// }
 
 // ToPB 转换为 *pb.RobotSplitDocPatternSplitterConfig
-func (c *PatternSplitterConfig) ToPB() *pb.RobotSplitDocPatternSplitterConfig {
-	return &pb.RobotSplitDocPatternSplitterConfig{RegexpJson: c.RegexpJSON}
-}
+// func (c *PatternSplitterConfig) ToPB() *pb.RobotSplitDocPatternSplitterConfig {
+// 	return &pb.RobotSplitDocPatternSplitterConfig{RegexpJson: c.RegexpJSON}
+// }
 
 // ToAppPB 转换为 *pb.AppSplitDocPatternSplitterConfig
-func (c *PatternSplitterConfig) ToAppPB() *pb.AppSplitDocPatternSplitterConfig {
-	return &pb.AppSplitDocPatternSplitterConfig{RegexpJson: c.RegexpJSON}
-}
+// func (c *PatternSplitterConfig) ToAppPB() *pb.AppSplitDocPatternSplitterConfig {
+// 	return &pb.AppSplitDocPatternSplitterConfig{RegexpJson: c.RegexpJSON}
+// }
 
 // ToPB 转换为 pagination.Splitter
-func (c *SplitterConfig) ToPB() *pb.RobotSplitDocSplitterConfig {
-	splitterConfig := &pb.RobotSplitDocSplitterConfig{
-		Splitter: c.Splitter,
-	}
-	switch c.Splitter {
-	case SplitterSentence:
-		splitterConfig.SplitterSentenceConfig = &pb.SplitterSentenceConfig{
-			EnableTable:        c.SplitterSentenceConfig.EnableTable,
-			EnableImage:        c.SplitterSentenceConfig.EnableImage,
-			SentenceSymbols:    c.SplitterSentenceConfig.SentenceSymbols,
-			MaxMiniChunkLength: uint64(c.SplitterSentenceConfig.MaxMiniChunkLength),
-		}
-	case SplitterToken:
-		splitterConfig.SplitterTokenConfig = &pb.SplitterTokenConfig{
-			EnableTable:     c.SplitterTokenConfig.EnableTable,
-			EnableImage:     c.SplitterTokenConfig.EnableImage,
-			MiniChunkLength: uint32(c.SplitterTokenConfig.MiniChunkLength),
-		}
-	}
-	return splitterConfig
-}
+// func (c *SplitterConfig) ToPB() *pb.RobotSplitDocSplitterConfig {
+// 	splitterConfig := &pb.RobotSplitDocSplitterConfig{
+// 		Splitter: c.Splitter,
+// 	}
+// 	switch c.Splitter {
+// 	case SplitterSentence:
+// 		splitterConfig.SplitterSentenceConfig = &pb.SplitterSentenceConfig{
+// 			EnableTable:        c.SplitterSentenceConfig.EnableTable,
+// 			EnableImage:        c.SplitterSentenceConfig.EnableImage,
+// 			SentenceSymbols:    c.SplitterSentenceConfig.SentenceSymbols,
+// 			MaxMiniChunkLength: uint64(c.SplitterSentenceConfig.MaxMiniChunkLength),
+// 		}
+// 	case SplitterToken:
+// 		splitterConfig.SplitterTokenConfig = &pb.SplitterTokenConfig{
+// 			EnableTable:     c.SplitterTokenConfig.EnableTable,
+// 			EnableImage:     c.SplitterTokenConfig.EnableImage,
+// 			MiniChunkLength: uint32(c.SplitterTokenConfig.MiniChunkLength),
+// 		}
+// 	}
+// 	return splitterConfig
+// }
 
 // ToAppPB 转换为 pagination.Splitter
-func (c *SplitterConfig) ToAppPB() *pb.AppSplitDocSplitterConfig {
-	splitterConfig := &pb.AppSplitDocSplitterConfig{
-		Splitter: c.Splitter,
-	}
-	switch c.Splitter {
-	case SplitterSentence:
-		splitterConfig.SplitterSentenceConfig = &pb.SplitterSentenceConfig{
-			EnableTable:        c.SplitterSentenceConfig.EnableTable,
-			EnableImage:        c.SplitterSentenceConfig.EnableImage,
-			SentenceSymbols:    c.SplitterSentenceConfig.SentenceSymbols,
-			MaxMiniChunkLength: uint64(c.SplitterSentenceConfig.MaxMiniChunkLength),
-		}
-	case SplitterToken:
-		splitterConfig.SplitterTokenConfig = &pb.SplitterTokenConfig{
-			EnableTable:     c.SplitterTokenConfig.EnableTable,
-			EnableImage:     c.SplitterTokenConfig.EnableImage,
-			MiniChunkLength: uint32(c.SplitterTokenConfig.MiniChunkLength),
-		}
-	}
-	return splitterConfig
-}
+// func (c *SplitterConfig) ToAppPB() *pb.AppSplitDocSplitterConfig {
+// 	splitterConfig := &pb.AppSplitDocSplitterConfig{
+// 		Splitter: c.Splitter,
+// 	}
+// 	switch c.Splitter {
+// 	case SplitterSentence:
+// 		splitterConfig.SplitterSentenceConfig = &pb.SplitterSentenceConfig{
+// 			EnableTable:        c.SplitterSentenceConfig.EnableTable,
+// 			EnableImage:        c.SplitterSentenceConfig.EnableImage,
+// 			SentenceSymbols:    c.SplitterSentenceConfig.SentenceSymbols,
+// 			MaxMiniChunkLength: uint64(c.SplitterSentenceConfig.MaxMiniChunkLength),
+// 		}
+// 	case SplitterToken:
+// 		splitterConfig.SplitterTokenConfig = &pb.SplitterTokenConfig{
+// 			EnableTable:     c.SplitterTokenConfig.EnableTable,
+// 			EnableImage:     c.SplitterTokenConfig.EnableImage,
+// 			MiniChunkLength: uint32(c.SplitterTokenConfig.MiniChunkLength),
+// 		}
+// 	}
+// 	return splitterConfig
+// }
 
 // ToMergerParse 转换为 pagination.Merger
 func ToMergerParse(prefix string, c MergerConfig) (MergerConfig, error) {
@@ -304,323 +303,214 @@ func ToMergerParse(prefix string, c MergerConfig) (MergerConfig, error) {
 }
 
 // ToPB 转换为 pagination.Merger
-func (c MergerConfig) ToPB() *pb.RobotSplitDocMergerConfig {
-	splitDocMergerConfig := &pb.RobotSplitDocMergerConfig{
-		Merger: c.Merger,
-	}
-	switch c.Merger {
-	case MergerAmount:
-		splitDocMergerConfig.MergerAmountConfig = &pb.MergerAmountConfig{
-			PageContentSize:        uint32(c.MergerAmountConfig.PageContentSize),
-			HeadOverlapSize:        uint32(c.MergerAmountConfig.HeadOverlapSize),
-			TailOverlapSize:        uint32(c.MergerAmountConfig.TailOverlapSize),
-			TablePageContentLength: uint32(c.MergerAmountConfig.TablePageContentLength),
-			TableHeadOverlapSize:   uint32(c.MergerAmountConfig.TableHeadOverlapSize),
-			TableTailOverlapSize:   uint32(c.MergerAmountConfig.TableTailOverlapSize),
-			TrimBySymbols:          []string{"。"},
-		}
-	case MergerLength:
-		splitDocMergerConfig.MergerLengthConfig = &pb.MergerLengthConfig{
-			PageContentLength:      uint32(c.MergerLengthConfig.PageContentLength),
-			HeadOverlapLength:      uint32(c.MergerLengthConfig.HeadOverlapLength),
-			TailOverlapLength:      uint32(c.MergerLengthConfig.TailOverlapLength),
-			TablePageContentLength: uint32(c.MergerLengthConfig.TablePageContentLength),
-			TableHeadOverlapLength: uint32(c.MergerLengthConfig.TableHeadOverlapLength),
-			TableTailOverlapLength: uint32(c.MergerLengthConfig.TableTailOverlapLength),
-			TrimBySymbols:          []string{"。"},
-		}
-
-	}
-	return splitDocMergerConfig
-}
+// func (c MergerConfig) ToPB() *pb.RobotSplitDocMergerConfig {
+// 	splitDocMergerConfig := &pb.RobotSplitDocMergerConfig{
+// 		Merger: c.Merger,
+// 	}
+// 	switch c.Merger {
+// 	case MergerAmount:
+// 		splitDocMergerConfig.MergerAmountConfig = &pb.MergerAmountConfig{
+// 			PageContentSize:        uint32(c.MergerAmountConfig.PageContentSize),
+// 			HeadOverlapSize:        uint32(c.MergerAmountConfig.HeadOverlapSize),
+// 			TailOverlapSize:        uint32(c.MergerAmountConfig.TailOverlapSize),
+// 			TablePageContentLength: uint32(c.MergerAmountConfig.TablePageContentLength),
+// 			TableHeadOverlapSize:   uint32(c.MergerAmountConfig.TableHeadOverlapSize),
+// 			TableTailOverlapSize:   uint32(c.MergerAmountConfig.TableTailOverlapSize),
+// 			TrimBySymbols:          []string{"。"},
+// 		}
+// 	case MergerLength:
+// 		splitDocMergerConfig.MergerLengthConfig = &pb.MergerLengthConfig{
+// 			PageContentLength:      uint32(c.MergerLengthConfig.PageContentLength),
+// 			HeadOverlapLength:      uint32(c.MergerLengthConfig.HeadOverlapLength),
+// 			TailOverlapLength:      uint32(c.MergerLengthConfig.TailOverlapLength),
+// 			TablePageContentLength: uint32(c.MergerLengthConfig.TablePageContentLength),
+// 			TableHeadOverlapLength: uint32(c.MergerLengthConfig.TableHeadOverlapLength),
+// 			TableTailOverlapLength: uint32(c.MergerLengthConfig.TableTailOverlapLength),
+// 			TrimBySymbols:          []string{"。"},
+// 		}
+//
+// 	}
+// 	return splitDocMergerConfig
+// }
 
 // ToAppPB 转换为 pagination.Merger
-func (c MergerConfig) ToAppPB() *pb.AppSplitDocMergerConfig {
-	splitDocMergerConfig := &pb.AppSplitDocMergerConfig{
-		Merger: c.Merger,
-	}
-	switch c.Merger {
-	case MergerAmount:
-		splitDocMergerConfig.MergerAmountConfig = &pb.MergerAmountConfig{
-			PageContentSize:        uint32(c.MergerAmountConfig.PageContentSize),
-			HeadOverlapSize:        uint32(c.MergerAmountConfig.HeadOverlapSize),
-			TailOverlapSize:        uint32(c.MergerAmountConfig.TailOverlapSize),
-			TablePageContentLength: uint32(c.MergerAmountConfig.TablePageContentLength),
-			TableHeadOverlapSize:   uint32(c.MergerAmountConfig.TableHeadOverlapSize),
-			TableTailOverlapSize:   uint32(c.MergerAmountConfig.TableTailOverlapSize),
-			TrimBySymbols:          []string{"。"},
-		}
-	case MergerLength:
-		splitDocMergerConfig.MergerLengthConfig = &pb.MergerLengthConfig{
-			PageContentLength:      uint32(c.MergerLengthConfig.PageContentLength),
-			HeadOverlapLength:      uint32(c.MergerLengthConfig.HeadOverlapLength),
-			TailOverlapLength:      uint32(c.MergerLengthConfig.TailOverlapLength),
-			TablePageContentLength: uint32(c.MergerLengthConfig.TablePageContentLength),
-			TableHeadOverlapLength: uint32(c.MergerLengthConfig.TableHeadOverlapLength),
-			TableTailOverlapLength: uint32(c.MergerLengthConfig.TableTailOverlapLength),
-			TrimBySymbols:          []string{"。"},
-		}
-
-	}
-	return splitDocMergerConfig
-}
+// func (c MergerConfig) ToAppPB() *pb.AppSplitDocMergerConfig {
+// 	splitDocMergerConfig := &pb.AppSplitDocMergerConfig{
+// 		Merger: c.Merger,
+// 	}
+// 	switch c.Merger {
+// 	case MergerAmount:
+// 		splitDocMergerConfig.MergerAmountConfig = &pb.MergerAmountConfig{
+// 			PageContentSize:        uint32(c.MergerAmountConfig.PageContentSize),
+// 			HeadOverlapSize:        uint32(c.MergerAmountConfig.HeadOverlapSize),
+// 			TailOverlapSize:        uint32(c.MergerAmountConfig.TailOverlapSize),
+// 			TablePageContentLength: uint32(c.MergerAmountConfig.TablePageContentLength),
+// 			TableHeadOverlapSize:   uint32(c.MergerAmountConfig.TableHeadOverlapSize),
+// 			TableTailOverlapSize:   uint32(c.MergerAmountConfig.TableTailOverlapSize),
+// 			TrimBySymbols:          []string{"。"},
+// 		}
+// 	case MergerLength:
+// 		splitDocMergerConfig.MergerLengthConfig = &pb.MergerLengthConfig{
+// 			PageContentLength:      uint32(c.MergerLengthConfig.PageContentLength),
+// 			HeadOverlapLength:      uint32(c.MergerLengthConfig.HeadOverlapLength),
+// 			TailOverlapLength:      uint32(c.MergerLengthConfig.TailOverlapLength),
+// 			TablePageContentLength: uint32(c.MergerLengthConfig.TablePageContentLength),
+// 			TableHeadOverlapLength: uint32(c.MergerLengthConfig.TableHeadOverlapLength),
+// 			TableTailOverlapLength: uint32(c.MergerLengthConfig.TableTailOverlapLength),
+// 			TrimBySymbols:          []string{"。"},
+// 		}
+//
+// 	}
+// 	return splitDocMergerConfig
+// }
 
 // ToPB 转换为 rechunk.Config
-func (c *RechunkConfig) ToPB() *pb.RobotSplitDocRechunkConfig {
-	return &pb.RobotSplitDocRechunkConfig{
-		HeadOverlapSize: uint32(c.HeadOverlapSize),
-		TailOverlapSize: uint32(c.TailOverlapSize),
-		TrimBySymbols:   c.TrimBySymbols,
-	}
-}
+// func (c *RechunkConfig) ToPB() *pb.RobotSplitDocRechunkConfig {
+// 	return &pb.RobotSplitDocRechunkConfig{
+// 		HeadOverlapSize: uint32(c.HeadOverlapSize),
+// 		TailOverlapSize: uint32(c.TailOverlapSize),
+// 		TrimBySymbols:   c.TrimBySymbols,
+// 	}
+// }
 
 // ToAppPB 转换为 rechunk.Config
-func (c *RechunkConfig) ToAppPB() *pb.AppSplitDocRechunkConfig {
-	return &pb.AppSplitDocRechunkConfig{
-		HeadOverlapSize: uint32(c.HeadOverlapSize),
-		TailOverlapSize: uint32(c.TailOverlapSize),
-		TrimBySymbols:   c.TrimBySymbols,
-	}
-}
+// func (c *RechunkConfig) ToAppPB() *pb.AppSplitDocRechunkConfig {
+// 	return &pb.AppSplitDocRechunkConfig{
+// 		HeadOverlapSize: uint32(c.HeadOverlapSize),
+// 		TailOverlapSize: uint32(c.TailOverlapSize),
+// 		TrimBySymbols:   c.TrimBySymbols,
+// 	}
+// }
 
 // ToPB 转换为 map[string]*pb.RobotFilters
-func (c RobotFilters) ToPB() map[string]*pb.RobotFilters {
-	r := make(map[string]*pb.RobotFilters)
-	for k, v := range c {
-		r[k] = &pb.RobotFilters{TopN: v.TopN}
-		for _, f := range v.Filter {
-			r[k].Filter = append(r[k].Filter, &pb.RobotFiltersInfo{
-				DocType:    f.DocType,
-				IndexId:    f.IndexID,
-				Confidence: f.Confidence,
-				TopN:       f.TopN,
-			})
-		}
-	}
-	return r
-}
+// func (c RobotFilters) ToPB() map[string]*pb.RetrievalConfig {
+// 	r := make(map[string]*pb.RetrievalConfig)
+// 	for k, v := range c {
+// 		r[k] = &pb.RetrievalConfig{}
+// 		for _, f := range v.Filter {
+// 			r[k].Retrievals = append(r[k].Retrievals, &pb.RetrievalInfo{
+// 				RetrievalType: common.KnowledgeType(f.DocType),
+// 				IndexId:       f.IndexID,
+// 				Confidence:    f.Confidence,
+// 				TopN:          f.TopN,
+// 			})
+// 		}
+// 	}
+// 	return r
+// }
 
 // ToAppPB 转换为 map[string]*pb.RobotFilters
-func (c RobotFilters) ToAppPB() map[string]*pb.AppFilters {
-	r := make(map[string]*pb.AppFilters)
-	for k, v := range c {
-		r[k] = &pb.AppFilters{TopN: v.TopN}
-		for _, f := range v.Filter {
-			r[k].Filter = append(r[k].Filter, &pb.AppFiltersInfo{
-				DocType:    f.DocType,
-				IndexId:    f.IndexID,
-				Confidence: f.Confidence,
-				TopN:       f.TopN,
-				IsEnable:   f.IsEnabled,
-				RougeScore: &pb.RougeScore{
-					F: f.RougeScore.F,
-					P: f.RougeScore.P,
-					R: f.RougeScore.R,
-				},
-			})
-		}
-	}
-	return r
-}
+// func (c RobotFilters) ToAppPB() map[string]*pb.AppFilters {
+// 	r := make(map[string]*pb.AppFilters)
+// 	for k, v := range c {
+// 		r[k] = &pb.AppFilters{TopN: v.TopN}
+// 		for _, f := range v.Filter {
+// 			r[k].Filter = append(r[k].Filter, &pb.AppFiltersInfo{
+// 				DocType:    f.DocType,
+// 				IndexId:    f.IndexID,
+// 				Confidence: f.Confidence,
+// 				TopN:       f.TopN,
+// 				IsEnable:   f.IsEnabled,
+// 				RougeScore: &pb.RougeScore{
+// 					F: f.RougeScore.F,
+// 					P: f.RougeScore.P,
+// 					R: f.RougeScore.R,
+// 				},
+// 			})
+// 		}
+// 	}
+// 	return r
+// }
 
 // ToPB 转换为 pb
-func (c *SearchVector) ToPB() *pb.RobotSearchVector {
-	return &pb.RobotSearchVector{Confidence: c.Confidence, TopN: c.TopN}
-}
+// func (c *SearchVector) ToPB() *pb.RobotSearchVector {
+// 	return &pb.RobotSearchVector{Confidence: c.Confidence, TopN: c.TopN}
+// }
 
 // ToAppPB 转换为 pb
-func (c *SearchVector) ToAppPB() *pb.AppSearchVector {
-	return &pb.AppSearchVector{Confidence: c.Confidence, TopN: c.TopN}
-}
+// func (c *SearchVector) ToAppPB() *pb.AppSearchVector {
+// 	return &pb.AppSearchVector{Confidence: c.Confidence, TopN: c.TopN}
+// }
 
 // GetSplitStrategy 获取解析策略
 func (c RobotDocSplit) GetSplitStrategy(ctx context.Context, prefix string, typ string) (string, error) {
 	conf, ok := c[typ]
 	if !ok {
-		log.ErrorContextf(ctx, "unknown split type: %s, RobotDocSplit: %+v", typ, c)
+		logx.E(ctx, "unknown split type: %s, RobotDocSplit: %+v", typ, c)
 		return "", errs.ErrUnknownSplitConfig
 	}
 	var err error
 	conf.MergerConfig, err = ToMergerParse(prefix, conf.MergerConfig)
 	if err != nil {
-		log.ErrorContextf(ctx, "获取拆分策略配置失败 conf.MergerConfig:%+v err:%+v", conf.MergerConfig, err)
+		logx.E(ctx, "获取拆分策略配置失败 conf.MergerConfig:%+v err:%+v", conf.MergerConfig, err)
 		return "", errs.ErrUnknownSplitConfig
 	}
-	log.DebugContextf(ctx, "get splitStrategy config for type: %s, prefix: %s, conf: %+v", typ, prefix, conf)
-	splitStrategy, err := jsoniter.MarshalToString(conf)
-	log.DebugContextf(ctx, "get config splitStrategy: %s err:%+v", splitStrategy, err)
+	logx.D(ctx, "get splitStrategy config for type: %s, prefix: %s, conf: %+v", typ, prefix, conf)
+	splitStrategy, err := jsonx.MarshalToString(conf)
+	logx.D(ctx, "get config splitStrategy: %s err:%+v", splitStrategy, err)
 	if err != nil {
-		log.ErrorContextf(ctx, "获取拆分策略配置失败 splitStrategy:%+v err:%+v", splitStrategy, err)
+		logx.E(ctx, "获取拆分策略配置失败 splitStrategy:%+v err:%+v", splitStrategy, err)
 		return "", errs.ErrUnknownSplitConfig
 	}
 	return splitStrategy, nil
 }
 
 // ToAppPB 转换为 *pb.AppSplitDoc
-func (c RobotDocSplit) ToAppPB() map[string]*pb.AppSplitDoc {
-	r := make(map[string]*pb.AppSplitDoc)
-	for k, v := range c {
-		r[k] = &pb.AppSplitDoc{
-			ParserConfig:          v.ParserConfig.ToAppPB(),
-			PatternSplitterConfig: v.PatternSplitterConfig.ToAppPB(),
-			SplitterConfig:        v.SplitterConfig.ToAppPB(),
-			MergerConfig:          v.MergerConfig.ToAppPB(),
-			RechunkConfig:         v.RechunkConfig.ToAppPB(),
-		}
-	}
-	return r
-}
+// func (c RobotDocSplit) ToAppPB() map[string]*pb.AppSplitDoc {
+// 	r := make(map[string]*pb.AppSplitDoc)
+// 	for k, v := range c {
+// 		r[k] = &pb.AppSplitDoc{
+// 			ParserConfig:          v.ParserConfig.ToAppPB(),
+// 			PatternSplitterConfig: v.PatternSplitterConfig.ToAppPB(),
+// 			SplitterConfig:        v.SplitterConfig.ToAppPB(),
+// 			MergerConfig:          v.MergerConfig.ToAppPB(),
+// 			RechunkConfig:         v.RechunkConfig.ToAppPB(),
+// 		}
+// 	}
+// 	return r
+// }
 
 // MarshalToString .
-func (c *SearchVector) MarshalToString() (string, error) {
-	if c == nil {
-		return "", nil
-	}
-	return jsoniter.MarshalToString(c)
-}
+// func (c *SearchVector) MarshalToString() (string, error) {
+// 	if c == nil {
+// 		return "", nil
+// 	}
+// 	return jsonx.MarshalToString(c)
+// }
 
 // MarshalToString .
-func (c RobotFilters) MarshalToString() (string, error) {
-	if len(c) == 0 {
-		return "", nil
-	}
-	return jsoniter.MarshalToString(c)
-}
+// func (c RobotFilters) MarshalToString() (string, error) {
+// 	if len(c) == 0 {
+// 		return "", nil
+// 	}
+// 	return jsonx.MarshalToString(c)
+// }
 
 // MarshalToString .
-func (c RobotDocSplit) MarshalToString() (string, error) {
-	if len(c) == 0 {
-		return "", nil
-	}
-	return jsoniter.MarshalToString(c)
-}
-
-// ParseSearchVectorFromPB .
-func ParseSearchVectorFromPB(searchVector *pb.RobotSearchVector) *SearchVector {
-	if searchVector == nil {
-		return nil
-	}
-	return &SearchVector{
-		Confidence: searchVector.GetConfidence(),
-		TopN:       searchVector.GetTopN(),
-	}
-}
-
-// ParseRobotFiltersFromPB .
-func ParseRobotFiltersFromPB(mapRobotFilters map[string]*pb.RobotFilters) RobotFilters {
-	r := make(RobotFilters)
-	for k, v := range mapRobotFilters {
-		filters := make([]RobotFilterDetail, 0, len(v.GetFilter()))
-		for _, f := range v.GetFilter() {
-			filters = append(filters, RobotFilterDetail{
-				TopN:       f.GetTopN(),
-				DocType:    f.GetDocType(),
-				IndexID:    f.GetIndexId(),
-				Confidence: f.GetConfidence(),
-			})
-		}
-		r[k] = RobotFilter{TopN: v.GetTopN(), Filter: filters}
-	}
-	return r
-}
-
-// ParseRobotDocSplitFromPB .
-func ParseRobotDocSplitFromPB(mapSplitDoc map[string]*pb.RobotSplitDoc) RobotDocSplit {
-	r := make(RobotDocSplit)
-	for k, v := range mapSplitDoc {
-		splitterConfig := SplitterConfig{
-			Splitter: v.GetSplitterConfig().GetSplitter(),
-		}
-		switch v.GetSplitterConfig().GetSplitter() {
-		case SplitterSentence:
-			splitterConfig.SplitterSentenceConfig = SplitterSentenceConfig{
-				EnableTable:        v.GetSplitterConfig().GetSplitterSentenceConfig().GetEnableTable(),
-				EnableImage:        v.GetSplitterConfig().GetSplitterSentenceConfig().GetEnableImage(),
-				SentenceSymbols:    v.GetSplitterConfig().GetSplitterSentenceConfig().GetSentenceSymbols(),
-				MaxMiniChunkLength: uint(v.GetSplitterConfig().GetSplitterSentenceConfig().GetMaxMiniChunkLength()),
-			}
-		case SplitterToken:
-			splitterConfig.SplitterTokenConfig = SplitterTokenConfig{
-				EnableTable:     v.GetSplitterConfig().GetSplitterTokenConfig().GetEnableTable(),
-				EnableImage:     v.GetSplitterConfig().GetSplitterTokenConfig().GetEnableImage(),
-				MiniChunkLength: uint(v.GetSplitterConfig().GetSplitterTokenConfig().GetMiniChunkLength()),
-			}
-		}
-		mergerConfig := MergerConfig{
-			Merger: v.GetMergerConfig().GetMerger(),
-		}
-		switch v.GetMergerConfig().GetMerger() {
-		case MergerAmount:
-			mergerConfig.MergerAmountConfig = MergerAmountConfig{
-				PageContentSize: uint(v.GetMergerConfig().GetMergerAmountConfig().GetPageContentSize()),
-				HeadOverlapSize: uint(v.GetMergerConfig().GetMergerAmountConfig().GetHeadOverlapSize()),
-				TailOverlapSize: uint(v.GetMergerConfig().GetMergerAmountConfig().GetTailOverlapSize()),
-				TablePageContentLength: uint(
-					v.GetMergerConfig().GetMergerAmountConfig().GetTablePageContentLength(),
-				),
-				TableHeadOverlapSize: uint(v.GetMergerConfig().GetMergerAmountConfig().GetTableHeadOverlapSize()),
-				TableTailOverlapSize: uint(v.GetMergerConfig().GetMergerAmountConfig().GetTableTailOverlapSize()),
-			}
-		case MergerLength:
-			mergerConfig.MergerLengthConfig = MergerLengthConfig{
-				PageContentLength: uint(v.GetMergerConfig().GetMergerLengthConfig().GetPageContentLength()),
-				HeadOverlapLength: uint(v.GetMergerConfig().GetMergerLengthConfig().GetHeadOverlapLength()),
-				TailOverlapLength: uint(v.GetMergerConfig().GetMergerLengthConfig().GetTailOverlapLength()),
-				TablePageContentLength: uint(
-					v.GetMergerConfig().GetMergerLengthConfig().GetTablePageContentLength(),
-				),
-				TableHeadOverlapLength: uint(
-					v.GetMergerConfig().GetMergerLengthConfig().GetTableHeadOverlapLength(),
-				),
-				TableTailOverlapLength: uint(
-					v.GetMergerConfig().GetMergerLengthConfig().GetTableTailOverlapLength(),
-				),
-			}
-		}
-		r[k] = PaginationConfig{
-			ParserConfig: ParserConfig{
-				SingleParagraph: v.GetParserConfig().GetSingleParagraph(),
-			},
-			PatternSplitterConfig: PatternSplitterConfig{
-				RegexpJSON: v.GetPatternSplitterConfig().GetRegexpJson(),
-			},
-			SplitterConfig: splitterConfig,
-			MergerConfig:   mergerConfig,
-			RechunkConfig: RechunkConfig{
-				HeadOverlapSize: uint(v.GetRechunkConfig().GetHeadOverlapSize()),
-				TailOverlapSize: uint(v.GetRechunkConfig().GetTailOverlapSize()),
-				TrimBySymbols:   v.GetRechunkConfig().GetTrimBySymbols(),
-			},
-		}
-	}
-	return r
-}
+// func (c RobotDocSplit) MarshalToString() (string, error) {
+// 	if len(c) == 0 {
+// 		return "", nil
+// 	}
+// 	return jsonx.MarshalToString(c)
+// }
 
 // MarshalToString .
-func (c *RobotEmbedding) MarshalToString() (string, error) {
-	if c == nil {
-		return "", nil
-	}
-	return jsoniter.MarshalToString(c)
-}
+// func (c *RobotEmbedding) MarshalToString() (string, error) {
+// 	if c == nil {
+// 		return "", nil
+// 	}
+// 	return jsonx.MarshalToString(c)
+// }
 
 // ToPB .
-func (c *RobotEmbedding) ToPB() *pb.RobotEmbedding {
-	return &pb.RobotEmbedding{Version: c.Version}
-}
+// func (c *RobotEmbedding) ToPB() *pb.RobotEmbedding {
+// 	return &pb.RobotEmbedding{Version: c.Version}
+// }
 
 // ToAppPB .
-func (c *RobotEmbedding) ToAppPB() *pb.AppEmbedding {
-	return &pb.AppEmbedding{Version: c.Version}
-}
-
-// ParseRobotEmbeddingFromPB .
-func ParseRobotEmbeddingFromPB(embedding *pb.RobotEmbedding) *RobotEmbedding {
-	if embedding == nil {
-		return nil
-	}
-	return &RobotEmbedding{Version: embedding.GetVersion()}
-}
+// func (c *RobotEmbedding) ToAppPB() *pb.AppEmbedding {
+// 	return &pb.AppEmbedding{Version: c.Version}
+// }
 
 // ToFilterMap .
 func (r *RobotFilter) ToFilterMap() map[uint32]RobotFilterDetail {

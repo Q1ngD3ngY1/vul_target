@@ -10,17 +10,16 @@ import (
 	"sync"
 	"time"
 
+	"git.woa.com/adp/common/x/logx"
+	secapi "git.woa.com/sec-api/go/scurl"
 	md "github.com/JohannesKaufmann/html-to-markdown"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/gabriel-vasile/mimetype"
 	"golang.org/x/net/html"
 
-	"git.code.oa.com/trpc-go/trpc-go/log"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/config"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/internal/model"
-	"git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/pkg/errs"
-	utilConfig "git.woa.com/dialogue-platform/bot-config/bot-knowledge-config-server/util/config"
-	secapi "git.woa.com/sec-api/go/scurl"
+	"git.woa.com/adp/kb/kb-config/internal/config"
+	qaEntity "git.woa.com/adp/kb/kb-config/internal/entity/qa"
+	"git.woa.com/adp/kb/kb-config/pkg/errs"
 )
 
 // DetectFileExtensionByContent 根据文件内容检测文件类型
@@ -29,7 +28,7 @@ func DetectFileExtensionByContent(ctx context.Context, fileName string, content 
 	if ext == ".txt" {
 		fileExt, err := DetectFileExtension(ctx, fileName)
 		if err != nil {
-			log.ErrorContextf(ctx, "DetectFileExtension fail, fileName: %s, err: %v", fileName, err)
+			logx.E(ctx, "DetectFileExtension fail, fileName: %s, err: %v", fileName, err)
 			return "", err
 		}
 		if fileExt == ".md" || fileExt == ".markdown" {
@@ -43,7 +42,7 @@ func DetectFileExtensionByContent(ctx context.Context, fileName string, content 
 func DetectFileExtension(ctx context.Context, fileName string) (string, error) {
 	u, err := url.Parse(fileName)
 	if err != nil {
-		log.ErrorContextf(ctx, "url.Parse(%s) err: %+v", fileName, err)
+		logx.E(ctx, "url.Parse(%s) err: %+v", fileName, err)
 		return "", err
 	}
 	return strings.ToLower(filepath.Ext(u.Path)), nil
@@ -64,41 +63,41 @@ func FileNameNoSuffix(fileName string) string {
 func CheckFileType(ctx context.Context, fileName, fileType string) bool {
 	fileExt := GetFileExt(fileName)
 	if fileExt == "" || fileType == "" {
-		log.WarnContextf(ctx, "CheckFileType fail, fileName: %s, fileType: %s", fileName, fileType)
+		logx.W(ctx, "CheckFileType fail, fileName: %s, fileType: %s", fileName, fileType)
 		return false
 	}
 	if fileExt != strings.ToLower(fileType) {
-		log.WarnContextf(ctx, "CheckFileType fail, fileExt: %s, fileType: %s", fileExt, fileType)
+		logx.W(ctx, "CheckFileType fail, fileExt: %s, fileType: %s", fileExt, fileType)
 		return false
 	}
 	return true
 }
 
 // AuditQaVideoURLs 审核视频链接
-func AuditQaVideoURLs(ctx context.Context, htmlStr string) ([]*model.DocQAFile, error) {
-	var files []*model.DocQAFile
+func AuditQaVideoURLs(ctx context.Context, htmlStr string) ([]*qaEntity.DocQAFile, error) {
+	var files []*qaEntity.DocQAFile
 	urls, err := CheckVideoUrls(htmlStr)
 	if err != nil {
-		log.ErrorContextf(ctx, "AuditQaVideoURLs fail, htmlStr: %s, err: %v", htmlStr, err)
+		logx.E(ctx, "AuditQaVideoURLs fail, htmlStr: %s, err: %v", htmlStr, err)
 		return nil, err
 	}
 	for _, videoUrl := range urls {
-		file := &model.DocQAFile{}
+		file := &qaEntity.DocQAFile{}
 		file.CosURL = videoUrl
-		file.FileType = model.QaVideoFile
+		file.FileType = qaEntity.QaVideoFile
 		files = append(files, file)
 	}
 	return files, nil
 }
 
 // ExtractVideoURLs 从html中提取视频链接
-func ExtractVideoURLs(ctx context.Context, htmlStr string) ([]*model.DocQAFile, error) {
+func ExtractVideoURLs(ctx context.Context, htmlStr string) ([]*qaEntity.DocQAFile, error) {
 	doc, err := html.Parse(strings.NewReader(htmlStr))
 	if err != nil {
-		log.ErrorContextf(ctx, "ExtractVideoURLs fail, htmlStr: %s, err: %v", htmlStr, err)
+		logx.E(ctx, "ExtractVideoURLs fail, htmlStr: %s, err: %v", htmlStr, err)
 		return nil, err
 	}
-	var files []*model.DocQAFile
+	var files []*qaEntity.DocQAFile
 	var f func(*html.Node)
 	f = func(n *html.Node) {
 		if n.Type == html.ElementNode && n.Data == "video" {
@@ -106,9 +105,9 @@ func ExtractVideoURLs(ctx context.Context, htmlStr string) ([]*model.DocQAFile, 
 			for _, a := range n.Attr {
 				if a.Key == "src" {
 					if a.Val != "" {
-						file := &model.DocQAFile{}
+						file := &qaEntity.DocQAFile{}
 						file.CosURL = a.Val
-						file.FileType = model.QaVideoFile
+						file.FileType = qaEntity.QaVideoFile
 						files = append(files, file)
 					} else {
 						srcEmpty = true
@@ -120,9 +119,9 @@ func ExtractVideoURLs(ctx context.Context, htmlStr string) ([]*model.DocQAFile, 
 					if c.Type == html.ElementNode && c.Data == "source" {
 						for _, a := range c.Attr {
 							if a.Key == "src" {
-								file := &model.DocQAFile{}
+								file := &qaEntity.DocQAFile{}
 								file.CosURL = a.Val
-								file.FileType = model.QaVideoFile
+								file.FileType = qaEntity.QaVideoFile
 								files = append(files, file)
 							}
 						}
@@ -146,7 +145,7 @@ func ConvertBytesToChars(ctx context.Context, bytes int64) int {
 	mb := float64(bytes) / float64(bytesPerMB)
 	// 计算对应的字符数
 	chars := mb * charsPerMB
-	log.InfoContextf(ctx, "ConvertBytesToChars|bytes:%d|mb:%v|chars|%v", bytes, mb, chars)
+	logx.I(ctx, "ConvertBytesToChars|bytes:%d|mb:%v|chars|%v", bytes, mb, chars)
 	// 返回四舍五入后的字符数，并转换为int类型
 	return int(math.Round(chars))
 }
@@ -178,14 +177,14 @@ func ConvertDocQaHtmlToMD(ctx context.Context, htmlStr string) (string, error) {
 
 	// 初始化转换器，关闭自动转义
 	converter := md.NewConverter("", true, &md.Options{
-		EscapeMode: "disabled", //防止 HTML 被转义
+		EscapeMode: "disabled", // 防止 HTML 被转义
 	})
 	// 添加自定义规则（优先级高于默认规则）
-	//converter.AddRules(KeepVideoRule())
+	// converter.AddRules(KeepVideoRule())
 	// 转换
 	markdown, err := converter.ConvertString(htmlStr)
 	if err != nil {
-		log.WarnContextf(ctx, "ConvertDocQaHtmlToMD fail, htmlStr: %s, err: %v", htmlStr, err)
+		logx.W(ctx, "ConvertDocQaHtmlToMD fail, htmlStr: %s, err: %v", htmlStr, err)
 		return "", err
 	}
 	// 3. 还原占位符为原始标签
@@ -275,32 +274,32 @@ func IsSafeURL(ctx context.Context, rawUrl string) (bool, error) {
 	cli := GetHTTPClient()
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 	if err != nil {
-		log.WarnContextf(ctx, "IsSafeURL NewRequestWithContext fail url: %s, err: %v", url, err)
+		logx.W(ctx, "IsSafeURL NewRequestWithContext fail url: %s, err: %v", url, err)
 		return false, errs.ErrFileUrlNotFound
 	}
 	start := time.Now()
 	resp, err := cli.Do(req)
 	elapsed := time.Since(start)
-	log.DebugContextf(ctx, "HEAD请求耗时: %v, URL: %s", elapsed, url)
+	logx.D(ctx, "HEAD请求耗时: %v, URL: %s", elapsed, url)
 	if err != nil {
-		log.WarnContextf(ctx, "IsSafeURL request head fail url: %s, err: %v", url, err)
+		logx.W(ctx, "IsSafeURL request head fail url: %s, err: %v", url, err)
 		return false, errs.ErrFileUrlFail
 	}
 	defer resp.Body.Close()
 	// 无法访问的地址,默认放过,不判断http状态码
 	// https://tapd.woa.com/tapd_fe/70080800/story/detail/1070080800121509551?from_iteration_id=1070080800002050135
-	//if resp.StatusCode != http.StatusOK {
-	//	log.WarnContextf(ctx, "IsSafeURL resp fail, url: %s, statusCode: %d", url, resp.StatusCode)
-	//	return false, errs.ErrFileUrlNotFound
-	//}
-	log.InfoContextf(ctx, "IsSafeURL resp code, url: %s, statusCode: %d", url, resp.StatusCode)
+	// if resp.StatusCode != http.StatusOK {
+	//	logx.W(ctx, "IsSafeURL resp fail, url: %s, statusCode: %d", url, resp.StatusCode)
+	//	return false, pkg.ErrFileUrlNotFound
+	// }
+	logx.I(ctx, "IsSafeURL resp code, url: %s, statusCode: %d", url, resp.StatusCode)
 	return true, nil
 }
 
 // CheckMarkdownImageURL 检查Markdown文本中的图片URL是否安全
 func CheckMarkdownImageURL(ctx context.Context, mdContext string, uin string, appBizID uint64, uniqueImgHost *sync.Map) error {
-	if utilConfig.IsInWhiteList(uin, appBizID, utilConfig.GetWhitelistConfig().QaURLWhiteList) {
-		log.InfoContextf(ctx, "CheckMarkdownImageURL|CheckQaURLWhiteList|uin:%s|appBizID:%d", uin, appBizID)
+	if config.IsInWhiteList(uin, appBizID, config.GetWhitelistConfig().QaURLWhiteList) {
+		logx.I(ctx, "CheckMarkdownImageURL|CheckQaURLWhiteList|uin:%s|appBizID:%d", uin, appBizID)
 		return nil
 	}
 	// 从Markdown文本中提取所有图片URL
@@ -313,15 +312,15 @@ func CheckMarkdownImageURL(ctx context.Context, mdContext string, uin string, ap
 	for _, image := range images {
 		u, err := url.Parse(image)
 		if err != nil {
-			log.WarnContextf(ctx, "CheckMarkdownImageURL|解析URL失败|imageURL:%s|err:%v", image, err)
+			logx.W(ctx, "CheckMarkdownImageURL|解析URL失败|imageURL:%s|err:%v", image, err)
 			return errs.ErrFileUrlFail
 		}
 		host := u.Hostname()
-		log.InfoContextf(ctx, "CheckMarkdownImageURL|host:%s", host)
+		logx.I(ctx, "CheckMarkdownImageURL|host:%s", host)
 		if uniqueImgHost != nil {
 			// 如果image已经检查过，则不做处理
 			if _, ok := uniqueImgHost.Load(host); ok {
-				log.InfoContextf(ctx, "CheckMarkdownImageURL|uniqueImgHost|image:%s|host:%v", image, host)
+				logx.I(ctx, "CheckMarkdownImageURL|uniqueImgHost|image:%s|host:%v", image, host)
 				continue
 			}
 		}
@@ -329,22 +328,22 @@ func CheckMarkdownImageURL(ctx context.Context, mdContext string, uin string, ap
 		// 检查URL是否安全
 		safe, err := IsSafeURL(ctx, image)
 		if err != nil {
-			log.WarnContextf(ctx, "CheckMarkdownImageURL|imageURL:%s|safe:%v|err:%v", image, safe, err)
+			logx.W(ctx, "CheckMarkdownImageURL|imageURL:%s|safe:%v|err:%v", image, safe, err)
 			return err
 		}
 		// 如果URL不安全则返回错误
 		if !safe {
-			log.WarnContextf(ctx, "CheckMarkdownImageURL|imageURL:%s|unsafe", image)
+			logx.W(ctx, "CheckMarkdownImageURL|imageURL:%s|unsafe", image)
 			return errs.ErrFileUrlFail
 		}
 		if uniqueImgHost != nil {
-			log.InfoContextf(ctx, "CheckMarkdownImageURL|写入host:%s|", host)
+			logx.I(ctx, "CheckMarkdownImageURL|写入host:%s|", host)
 			// 已经检查过的host，存入缓存map
 			uniqueImgHost.Store(host, struct{}{})
 		}
 		// 记录处理耗时
 		elapsed := time.Since(startTime)
-		log.InfoContextf(ctx, "处理IsSafeURL 第%s 行数据耗时: %v", image, elapsed)
+		logx.I(ctx, "处理IsSafeURL 第%s 行数据耗时: %v", image, elapsed)
 	}
 	return nil
 }
@@ -355,15 +354,15 @@ func CheckQaImgURLSafeToMD(ctx context.Context, context string, uin string, appB
 	startTime := time.Now() // 记录开始时间
 	mdAnswer, err := ConvertDocQaHtmlToMD(ctx, context)
 	if err != nil {
-		log.WarnContextf(ctx, "CheckQaImgURLSafeToMD context ConvertDocQaHtmlToMD err:%v", err)
+		logx.W(ctx, "CheckQaImgURLSafeToMD context ConvertDocQaHtmlToMD err:%v", err)
 		return "", err
 	}
 	// 记录处理耗时
 	elapsed := time.Since(startTime)
-	log.DebugContextf(ctx, "处理md %s 数据耗时: %v", context, elapsed)
+	logx.I(ctx, "处理md %s 数据耗时: %v", context, elapsed)
 
 	if err = CheckMarkdownImageURL(ctx, mdAnswer, uin, appBizID, uniqueImgHost); err != nil {
-		log.WarnContextf(ctx, "CheckQaImgURLSafeToMD context CheckMarkdownImageURL err:%v", err)
+		logx.W(ctx, "CheckQaImgURLSafeToMD context CheckMarkdownImageURL err:%v", err)
 		return "", err
 	}
 	return mdAnswer, nil

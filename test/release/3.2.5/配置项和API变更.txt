@@ -1,0 +1,50 @@
+-- NOTICE START: 公有云v325数据库需求，私有化v324需合入
+1 修改 error_zh-CN.json和error_en-US.json ErrOpenDbSourceFail 对应的错误提示信息
+  "ErrDbSourceTypeNotSupport": "数据库类型错误, 范围为 mysql, sql_server, postgres, oracle",
+  "ErrDbSchemaNotSupport": "不支持数据库模式",
+  "ErrDBSchemaQueryFailed": "数据库模式查询失败"
+
+  "ErrDbSourceTypeNotSupport": "Unsupported database type (Valid: mysql, sql_server, postgres, oracle)",
+  "ErrDbSchemaNotSupport": "Database schema unsupported",
+  "ErrDBSchemaQueryFailed": "Database schema query failed"
+
+2 修改 application.yaml 中的数据库连接配置
+  dsn_config_postgresql: sslmode=disable
+-- NOTICE END: 公有云v325数据库需求，私有化v324需合入
+
+3 新增embedding和rerank的计费配置项
+# 计费开关
+finance:
+  disabled: false
+  # 模型名到计费项的映射
+  billing_model_map:
+    sn-large-multi-language-v0.2.5:
+      model_name: youtu-embedding
+      sub_biz_type: Embedding
+      payload_type: embedding
+    sn-llm-embedding-2b-v0.2.2:
+      model_name: youtu-embedding
+      sub_biz_type: Embedding
+      payload_type: embedding_llm
+    sn-llm-reranker-2b-v0.2:
+      model_name: youtu-embedding
+      sub_biz_type: Rerank
+      payload_type: reranker_llm
+    sn-reranker-large-v0.4:
+      model_name: youtu-embedding
+      sub_biz_type: Rerank
+      payload_type: reranker
+  embedding_and_rerank:
+    report_switch: true
+    model_list: ["hunyuan-turbos","hunyuan-t1"]
+
+4 application.yaml -> db_source中新增配置项，限制数据库单元格存入es的字符串长度
+  es_cell_value_max_length: 2000
+
+5、增加 application.yaml 中的embedding_config配置项
+  embedding_config:
+    default_version: 7,
+    custom_version: 10000,
+    embedding_model_version:
+        sn-large-multi-language-v0.2.5: 7
+        sn-llm-embedding-2b-v0.2.2: 8

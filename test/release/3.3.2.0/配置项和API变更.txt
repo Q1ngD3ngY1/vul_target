@@ -1,0 +1,72 @@
+----------CAPI----------
+1 DescribeDbConfig响应新增：DbTypes
+
+----------七彩石----------
+1 新增数据库类型
+  database_types:
+    - type_id: mysql
+      type_name: MySQL
+    - type_id: oracle
+      type_name: Oracle
+    - type_id: postgres
+      type_name: PostgreSQL
+    - type_id: sqlserver
+      type_name: "SQL Server"
+
+2 新增embedding模型的名称映射版本
+  embedding_config:
+      embedding_model_version:
+          Youtu/youtu-embedding: 11
+          Youtu/youtu-embedding-llm: 12
+      embedding_model_mapping:
+          sn-large-multi-language-v0.2.5: Youtu/youtu-embedding
+          sn-llm-embedding-2b-v0.2.2: Youtu/youtu-embedding-llm
+
+
+kb-config_zh-CN.json中新增
+  "KeyEdit": " 修改为 ",
+  "KeyDocCategory": "文档分类",
+  "KeyQACategory": "QA分类",
+  "KeyModelNotFound": "模型不存在",
+  "KeyKnowledgeBaseNotFound": "知识库不存在",
+  "KeyKnowledgeBaseDeleted": "知识库已被删除",
+
+kb-config_en-US.json中新增
+  "KeyEdit": " modified to ",
+  "KeyDocCategory": "doc category",
+  "KeyQACategory": "QA category",
+  "KeyModelNotFound": "model not found",
+  "KeyKnowledgeBaseNotFound": "knowledge base not found",
+  "KeyKnowledgeBaseDeleted": "knowledge base has been deleted",
+
+------------2.新增定时任务--未完成的文档解析定时轮询任务 begin------------
+trpc_go.yaml
+server:
+  service:
+    - name: trpc.adp.kb_config.UnfinishedDocParseRefresh #service的路由名称,
+      nic: eth1 #网卡 ipport配置二选一，主要用于分布式定时器的互斥
+      port: 9105 #服务监听端口 可使用占位符 ${port}
+      # 定时器cron表达式: [second minute hour day month weekday]
+      network: "0 */5 * * * *?scheduler=UnfinishedDocParseRefresh&holdTime=5"
+      protocol: timer #应用层协议
+      timeout: 900000 # 请求最长处理时间，单位毫秒
+
+main.yaml
+# 未完成文档解析刷新配置
+unfinished_doc_parse_refresh_config:
+  enable: true
+  parse_status_store_time_second: 604800 # 7天
+  refresh_batch_size: 50
+  ignore_file_parse_callback_for_debug: false #线上绝对不能开！线上绝对不能开！线上绝对不能开！测试环境开启后，会忽略文件解析回调，用于测试未完成文档解析刷新配置的定时任务
+
+client.yaml
+client:
+  service:
+    - name: trpc.adp.kb_parse_router.ParseRouter
+      namespace: Test
+      target: ${KB_PARSER_ROUTER_TARGET}
+      timeout: 30000
+
+placeholder.yaml
+KB_PARSER_ROUTER_TARGET: polaris://trpc.adp.kb-parse-router.ParseRouter
+------------2.新增定时任务--未完成的文档解析定时轮询任务 end------------
